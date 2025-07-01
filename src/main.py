@@ -31,18 +31,24 @@ camera    = CameraHandler(**CAM_CFG)
 processor = VideoProcessor(camera)
 
 # --- Inicialização do app ---
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Start and stop the camera using FastAPI lifespan events."""
+    camera.start()
+    try:
+        yield
+    finally:
+        camera.stop()
+
+
 app = FastAPI(
     title="Electronic Baby Monitor",
     version="0.0.1",
+    lifespan=lifespan,
 )
-
-@app.on_event("startup")
-async def startup_event():
-    camera.start()
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    camera.stop()
 
 # --- Endpoints REST ---
 
@@ -71,9 +77,8 @@ def stream():
 # --- Entry point ---
 if __name__ == "__main__":
     uvicorn.run(
-        "main:app",
+        app,
         host=HOST,
         port=PORT,
-        reload=RELOAD
+        reload=RELOAD,
     )
-    

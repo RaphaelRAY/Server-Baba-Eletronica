@@ -14,6 +14,9 @@ python src/main.py
 
 O snapshot pode ser obtido em `/api/snapshot` e o streaming em `/api/stream`.
 
+A aplicação usa eventos de lifespan do FastAPI para ligar e desligar a câmera
+automaticamente.
+
 ## Testes dos Componentes
 
 Foi adicionada a pasta `tests` com casos de teste para validar partes

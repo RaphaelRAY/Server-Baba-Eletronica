@@ -20,7 +20,7 @@ class TestCameraHandler(unittest.TestCase):
         mock_onvif.return_value.create_media_service.return_value = media_service
 
         fake_cap = MagicMock()
-        fake_cap.read.side_effect = [(True, 'frame'), (False, None)]
+        fake_cap.read.return_value = (True, 'frame')
         mock_videocap.return_value = fake_cap
 
         cam = CameraHandler('host', 80, 'user', 'pass')
