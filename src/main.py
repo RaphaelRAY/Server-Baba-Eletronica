@@ -15,6 +15,17 @@ camera = CameraHandler(
 processor = VideoProcessor(camera)
 app = FastAPI()
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize camera and start processing thread."""
+    camera.start()
+    #processor.start()
+    yield
+
+app = FastAPI(lifespan=lifespan)
+
 @app.get("/api/snapshot", response_class=Response)
 def get_snapshot():
     frame = processor.get_processed_frame()
