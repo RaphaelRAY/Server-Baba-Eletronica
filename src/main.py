@@ -47,12 +47,13 @@ def status():
     
 @app.get("/api/snapshot", response_class=Response)
 def get_snapshot():
-    """Retorna um único frame processado em JPEG."""
-    frame = camera.get_frame()
+    """Retorna um único frame processado (com detecções) em JPEG."""
+    frame = processor.process_frame()
     if frame is None:
         raise HTTPException(503, "Sem frame disponível")
     _, jpg = cv2.imencode('.jpg', frame)
     return Response(content=jpg.tobytes(), media_type="image/jpeg")
+
 
 
 
