@@ -26,3 +26,13 @@ class VideoProcessor:
                             0.5, (0, 255, 0), 1)
 
         return frame
+    
+    def process_frame_data(self):
+        frame = self.camera.get_frame()
+        if frame is None:
+            return None
+
+        # Roda inferência (classe 0 = pessoa)
+        results = self.model.predict(source=frame, conf=0.4, classes=[0], verbose=False)
+
+        return results
