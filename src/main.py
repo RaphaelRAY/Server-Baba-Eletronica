@@ -32,7 +32,7 @@ def processing_loop():
     Não salva nem exibe nada — só move a câmera.
     """
     while not t_processing_stop.is_set():
-        frame = camera.get_frame(wait=True, timeout=1.0)
+        frame = camera.get_frame()
         if frame is None:
             continue
 
@@ -146,4 +146,4 @@ def get_latency():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("src.main:app", host="localhost", port=8000, reload=False)

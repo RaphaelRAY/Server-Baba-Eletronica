@@ -178,7 +178,7 @@ class CameraHandler:
                 "ProfileToken": token,
                 "Velocity": {
                     "PanTilt": {
-                        "x": vx,
+                        "x": -vx,
                         "y": -vy  # Inverte se necessário (ajuste depende da câmera)
                     }
                 }
