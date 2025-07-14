@@ -9,8 +9,8 @@ from threading import Thread, Event, Lock
 from collections import deque
 import time
 
-# Timeout global para conexões socket
-socket.setdefaulttimeout(5)
+# Timeout global para conexões socket ONVIF (em segundos)
+socket.setdefaulttimeout(2)
 
 
 class CameraHandler:
@@ -41,39 +41,53 @@ class CameraHandler:
 
         # Para medir latência de read()
         self._last_latency: float = None
-        self._latencies = deque(maxlen=100)  # guarda as últimas 100 medições
+        self._latencies = deque(maxlen=100)
+
+        # Cache da URI de streaming
+        self._stream_uri: str = None
 
     def start(self) -> None:
-        """Inicializa ONVIF, abre o stream RTSP e inicia thread de captura."""
-        # Se já está capturando, ignora
+        """Inicializa ONVIF (uma vez), abre stream RTSP com timeout e inicia thread."""
+        # Se já está rodando, ignora
         if self._cap and self._cap.isOpened() and self._thread and self._thread.is_alive():
             return
 
         try:
-            # Inicializa ONVIF
-            self._camera = ONVIFCamera(self.host, self.port, self.user, self.passwd)
-            media = self._camera.create_media_service()
-            profile = media.GetProfiles()[0]
+            # 1) Descobre URI apenas na 1ª vez
+            if not self._stream_uri:
+                self._camera = ONVIFCamera(self.host, self.port, self.user, self.passwd)
+                media = self._camera.create_media_service()
+                profile = media.GetProfiles()[0]
+                uri = media.GetStreamUri({
+                    "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
+                    "ProfileToken": profile.token
+                }).Uri
+                if uri.startswith("rtsp://"):
+                    uri = uri.replace("rtsp://", f"rtsp://{self.user}:{self.passwd}@")
+                self._stream_uri = uri
 
-            uri = media.GetStreamUri({
-                "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
-                "ProfileToken": profile.token
-            }).Uri
-            # Insere credenciais na URI
-            if uri.startswith("rtsp://"):
-                uri = uri.replace("rtsp://", f"rtsp://{self.user}:{self.passwd}@")
-
-            # Abre captura com FFmpeg
-            self._cap = cv2.VideoCapture(uri, cv2.CAP_FFMPEG)
+            # 2) Abre captura com FFmpeg usando a URI cacheada
+            #    e configura timeouts de open/read
+            self._cap = cv2.VideoCapture(self._stream_uri, cv2.CAP_FFMPEG)
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
             if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
                 self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-            if not self._cap.isOpened():
-                raise RuntimeError(f"Falha ao abrir stream: {uri}")
+            # ↓↓↓ timeouts em milissegundos ↓↓↓
+            if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+                self._cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
+            if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+                self._cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
 
-            # Inicia thread de captura
+            # -- alternativa usando opts para forçar TCP e stimeout (µs) --
+            # opts = ["rtsp_transport","tcp","stimeout","2000000"]
+            # self._cap = cv2.VideoCapture(self._stream_uri, cv2.CAP_FFMPEG, opts)
+
+            if not self._cap.isOpened():
+                raise RuntimeError(f"Falha ao abrir stream: {self._stream_uri}")
+
+            # 3) Inicia thread de captura
             self._stop.clear()
             self._thread = Thread(target=self._capture_loop, daemon=True)
             self._thread.start()
@@ -82,7 +96,7 @@ class CameraHandler:
             print(f"[Erro] Falha ao iniciar câmera: {e}")
 
     def _capture_loop(self):
-        """Loop que faz leitura contínua, armazena frame e mede latência."""
+        """Loop contínuo: lê frame, mede latência e armazena."""
         while not self._stop.is_set():
             if not self._cap or not self._cap.isOpened():
                 time.sleep(0.1)
@@ -99,28 +113,23 @@ class CameraHandler:
                     self._last_latency = latency
                     self._latencies.append(latency)
             else:
-                # tenta reiniciar se leitura falhar
+                # reconecta rapidamente usando só a URI
                 self._restart_capture()
 
     def get_frame(self):
-        """Retorna uma cópia do último frame disponível ou None."""
+        """Retorna uma cópia do último frame ou None."""
         with self._lock:
             return None if self._frame is None else self._frame.copy()
 
     def get_last_latency(self) -> float:
-        """Retorna a latência (em segundos) do último read()."""
+        """Retorna latência (s) do último read()."""
         with self._lock:
             return self._last_latency
 
     def get_latency_stats(self) -> dict:
         """
-        Retorna estatísticas de latência dos últimos frames:
-        {
-            'mean': <segundos>,
-            'min': <segundos>,
-            'max': <segundos>,
-            'count': <número de amostras>
-        }
+        Estatísticas de latência dos últimos frames:
+        { mean, min, max, count } em segundos.
         """
         with self._lock:
             vals = list(self._latencies)
@@ -134,7 +143,7 @@ class CameraHandler:
         }
 
     def _restart_capture(self):
-        """Reabre o VideoCapture em caso de falha na leitura."""
+        """Reabre o VideoCapture a partir da URI cacheada (sem nova ONVIF)."""
         try:
             if self._cap:
                 self._cap.release()
@@ -142,21 +151,14 @@ class CameraHandler:
             pass
         self._cap = None
         time.sleep(0.1)
-        try:
-            media = self._camera.create_media_service()
-            profile = media.GetProfiles()[0]
-            uri = media.GetStreamUri({
-                "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
-                "ProfileToken": profile.token
-            }).Uri
-            if uri.startswith("rtsp://"):
-                uri = uri.replace("rtsp://", f"rtsp://{self.user}:{self.passwd}@")
-            self._cap = cv2.VideoCapture(uri, cv2.CAP_FFMPEG)
-        except:
-            pass
+        if self._stream_uri:
+            try:
+                self._cap = cv2.VideoCapture(self._stream_uri, cv2.CAP_FFMPEG)
+            except:
+                pass
 
     def stop(self) -> None:
-        """Encerra captura e libera recursos."""
+        """Para a thread e libera recursos."""
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=1)
@@ -164,9 +166,6 @@ class CameraHandler:
             self._cap.release()
         if self._camera:
             try:
-                # Alguns dispositivos suportam Stop()
                 self._camera.devicemgmt.Stop()
             except:
                 pass
-
-
