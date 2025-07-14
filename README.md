@@ -1,6 +1,6 @@
 # Baba Eletronica Server
 
-Este projeto implementa um backend simples para monitoramento de bebes.
+Este projeto implementa um backend simples para monitoramento de bebês.
 As cameras sao acessadas via ONVIF e os frames podem ser transmitidos
 em formato MJPEG via HTTP.
 
