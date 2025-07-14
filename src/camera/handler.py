@@ -157,6 +157,41 @@ class CameraHandler:
             except:
                 pass
 
+    def control_ptz(self, err_x: float, err_y: float, kp: float = 0.6):
+        """Controla movimento PTZ com base no erro de posição da detecção."""
+        try:
+            ptz = self._camera.create_ptz_service()
+            media = self._camera.create_media_service()
+            profile = media.GetProfiles()[0]
+            token = profile.token
+        
+            # Aplica ganho proporcional
+            vx = kp * err_x
+            vy = kp * err_y
+        
+            # Limita velocidades entre -1.0 e 1.0
+            vx = max(min(vx, 1.0), -1.0)
+            vy = max(min(vy, 1.0), -1.0)
+        
+            # Monta comando de movimento
+            ptz.ContinuousMove({
+                "ProfileToken": token,
+                "Velocity": {
+                    "PanTilt": {
+                        "x": vx,
+                        "y": -vy  # Inverte se necessário (ajuste depende da câmera)
+                    }
+                }
+            })
+        
+            # Aguarda movimento curto, depois para
+            time.sleep(0.2)
+            ptz.Stop({"ProfileToken": token})
+        
+        except Exception as e:
+            print(f"[Erro PTZ] Falha no controle PTZ: {e}")
+
+
     def stop(self) -> None:
         """Para a thread e libera recursos."""
         self._stop.set()

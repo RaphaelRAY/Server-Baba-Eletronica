@@ -28,20 +28,37 @@ t_processing_thread = Thread(target=lambda: None)
 # Função de loop contínuo de processamento
 def processing_loop():
     """
-    Mantém loop rodando em background: obtém frame, processa e armazena resultado.
+    Loop dedicado ao rastreamento automático PTZ com base na detecção de pessoa.
+    Não salva nem exibe nada — só move a câmera.
     """
     while not t_processing_stop.is_set():
-        # Aguarda até 1s pelo próximo frame
         frame = camera.get_frame(wait=True, timeout=1.0)
         if frame is None:
             continue
-        # Processa o frame (detecções, anotação, etc.)
-        processed = processor.process_frame_data(frame=frame)
-        # Aqui você pode salvar ou repassar resultados:
-        # ex: publish_to_queue(processed)
-        # ou atualizar alguma variável global / cache
-        # ...
-        time.sleep(0.001)  # pequena pausa para ceder CPU
+
+        results = processor.process_frame_data(frame)
+        if results is None:
+            continue
+
+        height, width = frame.shape[:2]
+
+        for r in results:
+            for box in r.boxes:
+                x1, y1, x2, y2 = map(float, box.xyxy[0])
+                cx = (x1 + x2) / 2
+                cy = (y1 + y2) / 2
+
+                err_x = (cx - width / 2) / width
+                err_y = (cy - height / 2) / height
+
+                # Só move se estiver fora da zona morta
+                if abs(err_x) > 0.1 or abs(err_y) > 0.1:
+                    camera.control_ptz(err_x, err_y, kp=0.6)
+
+                break  # só a primeira detecção relevante
+
+        time.sleep(0.01)  # pequena pausa para aliviar CPU
+
 
 
 # FastAPI com contexto de vida (lifespan)
