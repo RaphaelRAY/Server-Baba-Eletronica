@@ -2,7 +2,7 @@ import os
 import time
 import cv2
 from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import logging
 
 from src.camera import CameraHandler
@@ -55,27 +55,50 @@ def get_snapshot():
     return Response(content=jpg.tobytes(), media_type="image/jpeg")
 
 
-def mjpeg_generator():
-    """Gera frames JPEG em multipart para MJPEG stream"""
-    while True:
-        frame = camera.get_frame()
-        if frame is None:
-            time.sleep(0.1)
-            continue
-        _, jpg = cv2.imencode('.jpg', frame)
-        chunk = jpg.tobytes()
-        yield (
-            b'--frame\r\n'
-            b'Content-Type: image/jpeg\r\n\r\n' + chunk + b'\r\n'
-        )
 
 @app.get("/api/stream")
 def stream():
-    """Endpoint para streaming contínuo via MJPEG"""
+    """MJPEG stream com overlay de latência."""
+    def mjpeg_generator():
+        while True:
+            frame = camera.get_frame()
+            if frame is None:
+                time.sleep(0.1)
+                continue
+            # sobrepõe latência atual
+            lat = camera.get_last_latency() or 0.0
+            cv2.putText(frame, f"Lat: {lat*1000:.1f} ms", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            _, jpg = cv2.imencode('.jpg', frame)
+            chunk = jpg.tobytes()
+            yield (
+                b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n' + chunk + b'\r\n'
+            )
+
     return StreamingResponse(
         mjpeg_generator(),
         media_type='multipart/x-mixed-replace; boundary=frame'
     )
+
+
+@app.get("/api/latency")
+def get_latency():
+    """
+    Retorna JSON com estatísticas de latência:
+      - last: última medição em ms
+      - mean, min, max: (ms) das últimas 100 leituras
+    """
+    stats = camera.get_latency_stats()
+    if not stats:
+        raise HTTPException(503, "Ainda não há medições de latência")
+    return JSONResponse({
+        "last_ms": round(camera.get_last_latency() * 1000, 1),
+        "mean_ms": round(stats["mean"] * 1000, 1),
+        "min_ms": round(stats["min"] * 1000, 1),
+        "max_ms": round(stats["max"] * 1000, 1),
+        "samples": stats["count"]
+    })
 
 
 if __name__ == "__main__":
