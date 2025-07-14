@@ -6,7 +6,7 @@ class VideoProcessor:
         self.camera = camera_handler
 
         # Carrega modelo leve YOLOv8n (pré-treinado para detecção de pessoas)
-        self.model = YOLO("yolov11n.pt")  # você pode usar yolov8s.pt, yolov8m.pt etc.
+        self.model = YOLO("yolov11n.pt")  
 
     def process_frame(self):
         frame = self.camera.get_frame()
