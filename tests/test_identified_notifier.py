@@ -25,6 +25,22 @@ class TestIdentifiedNotifier(unittest.TestCase):
         notifier.notify_if_identified(0.8, 'tkn')
         self.assertEqual(mock_notifier.send.call_count, 2)
 
+    @patch('src.notifications.identified_notifier.time')
+    @patch('src.notifications.identified_notifier.Notifier')
+    def test_generic_notify_uses_cooldown(self, mock_notifier_cls, mock_time):
+        mock_notifier = mock_notifier_cls.return_value
+        mock_time.time.side_effect = [100, 120, 200]
+
+        notifier = IdentifiedNotifier('key', cooldown=50)
+        notifier.notify('tkn', title='A', message='B')
+        mock_notifier.send.assert_called_once()
+
+        notifier.notify('tkn', title='A', message='B')
+        mock_notifier.send.assert_called_once()
+
+        notifier.notify('tkn', title='A', message='B')
+        self.assertEqual(mock_notifier.send.call_count, 2)
+
 
 if __name__ == '__main__':
     unittest.main()
