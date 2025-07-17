@@ -9,7 +9,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.camera import CameraHandler
 from src.processing import VideoProcessor
-from src.notifications import TokenRegistry
+from src.notifications import TokenRegistry, IdentifiedNotifier
+from src.monitor.presence_monitor import PresenceMonitor
+from src.firebase_setup import init_firebase
 
 # Configurações e inicialização de câmera e processador
 driver = {
@@ -21,6 +23,10 @@ driver = {
 camera = CameraHandler(**driver)
 processor = VideoProcessor(camera)
 token_registry = TokenRegistry()
+fcm_key = os.getenv("FCM_KEY", "")
+notifier = IdentifiedNotifier(fcm_key, cooldown=60)
+presence_monitor = PresenceMonitor(notifier, token_registry)
+init_firebase()
 
 # Eventos para controle de threads de processamento
 t_processing_stop = Event()
@@ -35,12 +41,15 @@ def processing_loop():
     """
     while not t_processing_stop.is_set():
         frame = camera.get_frame()
+        presence_monitor.check_camera(frame)
         if frame is None:
+            time.sleep(0.1)
             continue
 
         results = processor.process_frame_data(frame)
         if results is None:
-            continue
+            results = []
+        presence_monitor.handle_detections(results)
 
         height, width = frame.shape[:2]
 
