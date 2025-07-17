@@ -6,6 +6,8 @@ import importlib
 # Provide fake external modules if not installed
 sys.modules.setdefault('cv2', MagicMock())
 sys.modules.setdefault('onvif', MagicMock())
+sys.modules.setdefault('ultralytics', MagicMock())
+sys.modules.setdefault('pyfcm', MagicMock())
 
 from src.camera.handler import CameraHandler
 from src.processing.video_processor import VideoProcessor
@@ -19,8 +21,10 @@ class TestCameraHandler(unittest.TestCase):
         media_service.GetStreamUri.return_value = MagicMock(Uri='rtsp://cam/stream')
         mock_onvif.return_value.create_media_service.return_value = media_service
 
+        fake_frame = MagicMock()
+        fake_frame.copy.return_value = 'frame'
         fake_cap = MagicMock()
-        fake_cap.read.return_value = (True, 'frame')
+        fake_cap.read.return_value = (True, fake_frame)
         mock_videocap.return_value = fake_cap
 
         cam = CameraHandler('host', 80, 'user', 'pass')

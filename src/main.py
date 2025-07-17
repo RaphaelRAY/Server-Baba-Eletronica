@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.camera import CameraHandler
 from src.processing import VideoProcessor
+from src.notifications import TokenRegistry
 
 # Configurações e inicialização de câmera e processador
 driver = {
@@ -19,6 +20,7 @@ driver = {
 }
 camera = CameraHandler(**driver)
 processor = VideoProcessor(camera)
+token_registry = TokenRegistry()
 
 # Eventos para controle de threads de processamento
 t_processing_stop = Event()
@@ -127,6 +129,16 @@ def stream():
         mjpeg_generator(),
         media_type='multipart/x-mixed-replace; boundary=frame'
     )
+
+
+@app.post("/api/register-token")
+def register_token(data: dict):
+    """Recebe token FCM e registra para notificações."""
+    token = data.get("token")
+    if not token:
+        raise HTTPException(400, "Token ausente")
+    token_registry.add(token)
+    return {"status": "ok"}
 
 
 @app.get("/api/latency")
