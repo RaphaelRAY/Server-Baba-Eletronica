@@ -24,9 +24,9 @@ class TestFirebaseSetup(unittest.TestCase):
     @patch('src.firebase_setup.os.path')
     def test_initialize_called_default(self, mock_path, mock_credentials, mock_firebase):
         mock_firebase._apps = []
-        default_path = '/root/serviceAccountKey.json'
+        default_path = os.path.join(os.path.expanduser('~'), 'serviceAccountKey.json')
         mock_path.exists.return_value = True
-        mock_path.dirname.return_value = '/root'
+        mock_path.dirname.return_value = os.path.expanduser('~')
         mock_path.join.return_value = default_path
         with patch.dict(os.environ, {}, clear=True):
             init_firebase()
