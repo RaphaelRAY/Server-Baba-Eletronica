@@ -29,9 +29,9 @@ class PresenceMonitor:
         """Track person absence and send notification."""
         now = time.time()
         detected = False
-        for r in results or []:
-            if getattr(r, "boxes", []):
-                if len(r.boxes) > 0:
+        for detection_result in results or []:
+            if getattr(detection_result, "boxes", []):
+                if len(detection_result.boxes) > 0:
                     detected = True
                     break
         if detected:
