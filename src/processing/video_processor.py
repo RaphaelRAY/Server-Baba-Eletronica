@@ -34,3 +34,7 @@ class VideoProcessor:
         results = self.model.predict(source=frame, conf=0.4, classes=[0], verbose=False)
         return results
 
+    def get_processed_frame(self):
+        """Return the latest frame from the camera."""
+        return self.camera.get_frame()
+
