@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.camera import CameraHandler
 from src.processing import VideoProcessor
+from src.notifications import TokenRegistry, StatusNotifier
 
 # Configurações e inicialização de câmera e processador
 driver = {
@@ -19,6 +20,8 @@ driver = {
 }
 camera = CameraHandler(**driver)
 processor = VideoProcessor(camera)
+token_registry = TokenRegistry()
+status_notifier = StatusNotifier(os.getenv("FCM_KEY", ""))
 
 # Eventos para controle de threads de processamento
 t_processing_stop = Event()
@@ -34,28 +37,36 @@ def processing_loop():
     while not t_processing_stop.is_set():
         frame = camera.get_frame()
         if frame is None:
+            for tkn in token_registry.get_all():
+                status_notifier.notify_disconnect(tkn)
+            time.sleep(0.1)
             continue
 
         results = processor.process_frame_data(frame)
         if results is None:
             continue
 
-        height, width = frame.shape[:2]
+        detected = any(len(r.boxes) > 0 for r in results)
+        if not detected:
+            for tkn in token_registry.get_all():
+                status_notifier.notify_no_person(tkn)
+        else:
+            height, width = frame.shape[:2]
 
-        for r in results:
-            for box in r.boxes:
-                x1, y1, x2, y2 = map(float, box.xyxy[0])
-                cx = (x1 + x2) / 2
-                cy = (y1 + y2) / 2
+            for r in results:
+                for box in r.boxes:
+                    x1, y1, x2, y2 = map(float, box.xyxy[0])
+                    cx = (x1 + x2) / 2
+                    cy = (y1 + y2) / 2
 
-                err_x = (cx - width / 2) / width
-                err_y = (cy - height / 2) / height
+                    err_x = (cx - width / 2) / width
+                    err_y = (cy - height / 2) / height
 
-                # Só move se estiver fora da zona morta
-                if abs(err_x) > 0.1 or abs(err_y) > 0.1:
-                    camera.control_ptz(err_x, err_y, kp=0.6)
+                    # Só move se estiver fora da zona morta
+                    if abs(err_x) > 0.1 or abs(err_y) > 0.1:
+                        camera.control_ptz(err_x, err_y, kp=0.6)
 
-                break  # só a primeira detecção relevante
+                    break  # só a primeira detecção relevante
 
         time.sleep(0.01)  # pequena pausa para aliviar CPU
 
@@ -90,7 +101,7 @@ app = FastAPI(lifespan=lifespan)
 @app.get("/api/status", response_class=Response)
 def status():
     """Verifica se a câmera está conectada."""
-    if not camera._cap or not camera._cap.isOpened():
+    if not camera.is_connected():
         return Response("Camera is not connected", status_code=503)
     return Response("Camera is connected", status_code=200)
 
@@ -127,6 +138,16 @@ def stream():
         mjpeg_generator(),
         media_type='multipart/x-mixed-replace; boundary=frame'
     )
+
+
+@app.post("/api/register-token")
+def register_token(data: dict):
+    """Recebe token FCM e registra para notificações."""
+    token = data.get("token")
+    if not token:
+        raise HTTPException(400, "Token ausente")
+    token_registry.add(token)
+    return {"status": "ok"}
 
 
 @app.get("/api/latency")

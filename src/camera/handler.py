@@ -121,6 +121,10 @@ class CameraHandler:
         with self._lock:
             return None if self._frame is None else self._frame.copy()
 
+    def is_connected(self) -> bool:
+        """Indica se o stream está aberto."""
+        return bool(self._cap and self._cap.isOpened())
+
     def get_last_latency(self) -> float:
         """Retorna latência (s) do último read()."""
         with self._lock:
