@@ -26,3 +26,11 @@ class IdentifiedNotifier:
 
         self._notifier.send(token, title, message)
         self._last_sent = now
+
+    def notify(self, token: str, *, title: str, message: str) -> None:
+        """Send a generic notification respecting cooldown."""
+        now = time.time()
+        if now - self._last_sent < self._cooldown:
+            return
+        self._notifier.send(token, title, message)
+        self._last_sent = now
