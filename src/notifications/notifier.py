@@ -1,14 +1,17 @@
-from pyfcm import FCMNotification
+"""Wrapper around Firebase Admin messaging."""
+
+from firebase_admin import messaging
 
 
 class Notifier:
-    """Send push notifications via FCM."""
+    """Send push notifications via Firebase Admin SDK."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str | None = None):
         self._api_key = api_key
-        self._client = FCMNotification(api_key=api_key)
 
     def send(self, token: str, title: str, message: str):
-        self._client.notify_single_device(
-            registration_id=token, message_title=title, message_body=message
+        msg = messaging.Message(
+            token=token,
+            notification=messaging.Notification(title=title, body=message),
         )
+        messaging.send(msg)

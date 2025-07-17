@@ -6,6 +6,5 @@ ultralytics
 onvif-zeep
 sqlalchemy
 psycopg2-binary
-pyfcm
 python-dotenv
 firebase-admin
