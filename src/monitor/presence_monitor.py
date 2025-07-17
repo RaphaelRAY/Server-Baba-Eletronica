@@ -38,7 +38,7 @@ class PresenceMonitor:
             self.last_person_ts = now
             self.absence_sent = False
         elif now - self.last_person_ts > self.absence_timeout and not self.absence_sent:
-            self._notify_all("Aus\u00eancia de humano", "Nenhuma pessoa detectada")
+            self._notify_all("Ausência de humano", "Nenhuma pessoa detectada")
             self.absence_sent = True
 
     def _notify_all(self, title: str, message: str) -> None:
