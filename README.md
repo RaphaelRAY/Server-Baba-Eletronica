@@ -9,7 +9,7 @@ em formato MJPEG via HTTP.
 Para iniciar o servidor e acessar a câmera, rode:
 
 ```bash
-python src/main.py
+python -m src.main
 ```
 
 O snapshot pode ser obtido em `/api/snapshot` e o streaming em `/api/stream`.
