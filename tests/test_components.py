@@ -7,7 +7,6 @@ import importlib
 sys.modules.setdefault('cv2', MagicMock())
 sys.modules.setdefault('onvif', MagicMock())
 sys.modules.setdefault('ultralytics', MagicMock())
-sys.modules.setdefault('pyfcm', MagicMock())
 
 from src.camera.handler import CameraHandler
 from src.processing.video_processor import VideoProcessor

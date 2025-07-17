@@ -7,7 +7,6 @@ import importlib
 sys.modules.setdefault('cv2', MagicMock())
 sys.modules.setdefault('onvif', MagicMock())
 sys.modules.setdefault('ultralytics', MagicMock())
-sys.modules.setdefault('pyfcm', MagicMock())
 
 if importlib.util.find_spec('httpx') is None:
     raise unittest.SkipTest('httpx not installed')
