@@ -41,11 +41,20 @@ class TestVideoProcessor(unittest.TestCase):
         self.assertEqual(proc.get_processed_frame(), 'frame')
 
 class TestDatabase(unittest.TestCase):
-    def test_save_and_get_event(self):
+    def test_memory_mode(self):
+        from src.db.database import Database
+        db = Database(server=Database.SERVER_MEMORY)
+        db.save_event({'type': 'mem', 'confidence': 0.5})
+        events = db.get_recent_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['type'], 'mem')
+        self.assertAlmostEqual(events[0]['confidence'], 0.5)
+
+    def test_sqlalchemy_mode(self):
         if importlib.util.find_spec('sqlalchemy') is None:
             self.skipTest('sqlalchemy not installed')
         from src.db.database import Database
-        db = Database('sqlite:///:memory:')
+        db = Database(server=Database.SERVER_MYSQL, url='sqlite:///:memory:')
         db.save_event({'type': 'test', 'confidence': 0.9})
         events = db.get_recent_events()
         self.assertEqual(len(events), 1)
