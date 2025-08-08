@@ -9,9 +9,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.camera import CameraHandler
 from src.processing import VideoProcessor
-from src.notifications import TokenRegistry, IdentifiedNotifier
+from src.notifications import IdentifiedNotifier, TokenRegistry
 from src.monitor.presence_monitor import PresenceMonitor
-from src.firebase_setup import init_firebase
+from src.firebase_setup import FirebaseSetup
 
 # Configurações e inicialização de câmera e processador
 driver = {
@@ -26,7 +26,7 @@ token_registry = TokenRegistry()
 fcm_key = os.getenv("FCM_KEY", "")
 notifier = IdentifiedNotifier(fcm_key, cooldown=60)
 presence_monitor = PresenceMonitor(notifier, token_registry)
-init_firebase()
+FirebaseSetup().init_firebase()
 
 # Eventos para controle de threads de processamento
 t_processing_stop = Event()
@@ -71,9 +71,9 @@ def processing_loop():
         time.sleep(0.01)  # pequena pausa para aliviar CPU
 
 
-
 # FastAPI com contexto de vida (lifespan)
 from contextlib import asynccontextmanager
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -112,13 +112,14 @@ def get_snapshot():
     frame = processor.process_frame()
     if frame is None:
         raise HTTPException(503, "Sem frame disponível")
-    _, jpg = cv2.imencode('.jpg', frame)
+    _, jpg = cv2.imencode(".jpg", frame)
     return Response(jpg.tobytes(), media_type="image/jpeg")
 
 
 @app.get("/api/stream")
 def stream():
     """MJPEG stream com overlay de latência."""
+
     def mjpeg_generator():
         while True:
             frame = camera.get_frame()
@@ -126,17 +127,23 @@ def stream():
                 time.sleep(0.1)
                 continue
             lat = camera.get_last_latency() or 0.0
-            cv2.putText(frame, f"Lat: {lat*1000:.1f} ms", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            _, jpg = cv2.imencode('.jpg', frame)
+            cv2.putText(
+                frame,
+                f"Lat: {lat*1000:.1f} ms",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 255, 0),
+                2,
+            )
+            _, jpg = cv2.imencode(".jpg", frame)
             yield (
-                b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' + jpg.tobytes() + b'\r\n'
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + jpg.tobytes() + b"\r\n"
             )
 
     return StreamingResponse(
-        mjpeg_generator(),
-        media_type='multipart/x-mixed-replace; boundary=frame'
+        mjpeg_generator(), media_type="multipart/x-mixed-replace; boundary=frame"
     )
 
 
@@ -156,15 +163,18 @@ def get_latency():
     stats = camera.get_latency_stats()
     if not stats:
         raise HTTPException(503, "Ainda não há medições de latência")
-    return JSONResponse({
-        "last_ms": round(camera.get_last_latency() * 1000, 1),
-        "mean_ms": round(stats["mean"] * 1000, 1),
-        "min_ms": round(stats["min"] * 1000, 1),
-        "max_ms": round(stats["max"] * 1000, 1),
-        "samples": stats["count"]
-    })
+    return JSONResponse(
+        {
+            "last_ms": round(camera.get_last_latency() * 1000, 1),
+            "mean_ms": round(stats["mean"] * 1000, 1),
+            "min_ms": round(stats["min"] * 1000, 1),
+            "max_ms": round(stats["max"] * 1000, 1),
+            "samples": stats["count"],
+        }
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("src.main:app", host="localhost", port=8000, reload=False)
