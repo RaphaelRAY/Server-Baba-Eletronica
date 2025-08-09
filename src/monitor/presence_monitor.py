@@ -17,6 +17,7 @@ class PresenceMonitor:
         *,
         absence_timeout: int = 30,
     ):
+        """Initialize dependencies and absence tracking state."""
         self.notifier = notifier
         self.registry = registry
         self.db = db
@@ -52,5 +53,6 @@ class PresenceMonitor:
             self.absence_sent = True
 
     def _notify_all(self, title: str, message: str) -> None:
+        """Send a notification to all registered tokens."""
         for t in self.registry.get_all():
             self.notifier.notify(t, title=title, message=message)

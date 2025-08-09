@@ -27,6 +27,7 @@ class Database:
     SERVER_MYSQL = 1
 
     def __init__(self, server: int = SERVER_MEMORY, url: Optional[str] = None):
+        """Initialize the database backend."""
         self.server = server
         if server == self.SERVER_MEMORY:
             self._events: List[Dict[str, str]] = []

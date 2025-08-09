@@ -18,6 +18,7 @@ class PositionMonitor:
         model: YOLO | None = None,
         face_down_margin: float = 20.0,
     ):
+        """Store dependencies and pose parameters."""
         self.notifier = notifier
         self.registry = registry
         self.model = model or YOLO("yolo11n.pt")
@@ -49,5 +50,6 @@ class PositionMonitor:
         self.face_down_sent = False
 
     def _notify_all(self, title: str, message: str) -> None:
+        """Send a notification to all tokens."""
         for token in self.registry.get_all():
             self.notifier.notify(token, title=title, message=message)

@@ -10,6 +10,7 @@ class IdentifiedNotifier:
     """Send FCM notification when a person is identified."""
 
     def __init__(self, api_key: str, *, threshold: float = 0.9, cooldown: int = 60):
+        """Configure thresholds and underlying notifier."""
         self._threshold = threshold
         self._cooldown = cooldown
         self._notifier = Notifier(api_key)

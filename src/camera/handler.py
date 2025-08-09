@@ -25,6 +25,7 @@ class CameraHandler:
         width: int = 640,
         height: int = 480,
     ):
+        """Configure camera credentials and defaults."""
         self.host = host
         self.port = port
         self.user = user
