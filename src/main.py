@@ -12,6 +12,7 @@ from src.processing import VideoProcessor
 from src.notifications import IdentifiedNotifier, TokenRegistry
 from src.monitor.presence_monitor import PresenceMonitor
 from src.firebase_setup import FirebaseSetup
+from src.db import Database
 
 # Configurações e inicialização de câmera e processador
 driver = {
@@ -25,7 +26,12 @@ processor = VideoProcessor(camera)
 token_registry = TokenRegistry()
 fcm_key = os.getenv("FCM_KEY", "")
 notifier = IdentifiedNotifier(fcm_key, cooldown=60)
-presence_monitor = PresenceMonitor(notifier, token_registry)
+db_url = os.getenv("DB_URL")
+if db_url:
+    database = Database(server=Database.SERVER_MYSQL, url=db_url)
+else:
+    database = Database(server=Database.SERVER_MEMORY)
+presence_monitor = PresenceMonitor(notifier, token_registry, database)
 FirebaseSetup().init_firebase()
 
 # Eventos para controle de threads de processamento
