@@ -1,5 +1,6 @@
 from typing import List
 
+import cv2
 from ultralytics import YOLO
 
 from src.notifications.identified_notifier import IdentifiedNotifier
@@ -23,9 +24,12 @@ class PositionMonitor:
         self.face_down_margin = face_down_margin
         self.face_down_sent = False
 
-    def analyze_frame(self, frame) -> None:
-        """Run pose model on a frame."""
+    def analyze_frame(self, frame, show: bool = False) -> None:
+        """Run pose model and optionally display keypoints."""
         results = self.model(frame)
+        if show and results:
+            cv2.imshow("Pose", results[0].plot())
+            cv2.waitKey(1)
         self.handle_pose(results)
 
     def handle_pose(self, results: List) -> None:
