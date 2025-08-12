@@ -1,4 +1,5 @@
 import sys
+import os
 import unittest
 from unittest.mock import patch, MagicMock
 import importlib
@@ -7,6 +8,10 @@ import importlib
 sys.modules.setdefault('cv2', MagicMock())
 sys.modules.setdefault('onvif', MagicMock())
 sys.modules.setdefault('ultralytics', MagicMock())
+firebase_admin_mock = MagicMock()
+firebase_admin_mock.credentials = MagicMock()
+sys.modules.setdefault('firebase_admin', firebase_admin_mock)
+os.environ.setdefault('FIREBASE_CRED', 'path/key.json')
 
 if importlib.util.find_spec('httpx') is None:
     raise unittest.SkipTest('httpx not installed')
