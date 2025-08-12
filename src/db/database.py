@@ -57,15 +57,18 @@ class Database:
             session.commit()
             session.close()
 
-    def get_recent_events(self, limit: int = 50):
-        """Return recent events from the chosen backend."""
+    def get_recent_events(self, offset: int = 0, limit: int = 50):
+        """Return recent events with optional offset and limit."""
 
         if self.server == self.SERVER_MEMORY:
-            return list(reversed(self._events[-limit:]))
+            events = list(reversed(self._events))
+            return events[offset : offset + limit]
+
         session = self.Session()
         events = (
             session.query(Event)
             .order_by(Event.timestamp.desc())
+            .offset(offset)
             .limit(limit)
             .all()
         )
