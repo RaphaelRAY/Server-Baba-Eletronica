@@ -11,7 +11,9 @@ from src.camera import CameraHandler
 from src.processing import VideoProcessor
 from src.notifications import IdentifiedNotifier, TokenRegistry
 from src.monitor.presence_monitor import PresenceMonitor
+from src.monitor.position_monitor import PositionMonitor
 from src.firebase_setup import FirebaseSetup
+from src.db import Database
 
 # Configurações e inicialização de câmera e processador
 driver = {
@@ -20,13 +22,23 @@ driver = {
     "user": os.getenv("CAM_USER", "admin"),
     "passwd": os.getenv("CAM_PASS", "123456"),
 }
+# Inicialização de serviços
 camera = CameraHandler(**driver)
 processor = VideoProcessor(camera)
 token_registry = TokenRegistry()
 fcm_key = os.getenv("FCM_KEY", "")
 notifier = IdentifiedNotifier(fcm_key, cooldown=60)
-presence_monitor = PresenceMonitor(notifier, token_registry)
+db_url = os.getenv("DB_URL")
+if db_url:
+    database = Database(server=Database.SERVER_MYSQL, url=db_url)
+else:
+    database = Database(server=Database.SERVER_MEMORY)
+presence_monitor = PresenceMonitor(notifier, token_registry, database)
+position_monitor = PositionMonitor(notifier, token_registry)
 FirebaseSetup().init_firebase()
+
+# Mostrar poses em janela (alterar para True se desejar)
+SHOW_POSE_WINDOW = False
 
 # Eventos para controle de threads de processamento
 t_processing_stop = Event()
@@ -45,6 +57,9 @@ def processing_loop():
         if frame is None:
             time.sleep(0.1)
             continue
+
+        # Analisa pose e opcionalmente exibe janela
+        position_monitor.analyze_frame(frame, show=SHOW_POSE_WINDOW)
 
         results = processor.process_frame_data(frame)
         if results is None:
@@ -93,6 +108,8 @@ async def lifespan(app: FastAPI):
     t_processing_stop.set()
     t_processing_thread.join(timeout=1)
     camera.stop()
+    if SHOW_POSE_WINDOW:
+        cv2.destroyAllWindows()
 
 
 app = FastAPI(lifespan=lifespan)

@@ -2,6 +2,7 @@ class EventManager:
     """Analyzes detections and manages event persistence."""
 
     def __init__(self, db, rules: dict):
+        """Store database handle and event rules."""
         self.db = db
         self.rules = rules
 
@@ -11,5 +12,6 @@ class EventManager:
         return []
 
     def persist(self, events):
+        """Save each event using the database."""
         for ev in events:
             self.db.save_event(ev)

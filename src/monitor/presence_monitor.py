@@ -3,14 +3,24 @@ from typing import List
 
 from src.notifications.identified_notifier import IdentifiedNotifier
 from src.notifications.token_registry import TokenRegistry
+from src.db import Database
 
 
 class PresenceMonitor:
     """Monitor camera frames and detections to notify events."""
 
-    def __init__(self, notifier: IdentifiedNotifier, registry: TokenRegistry, *, absence_timeout: int = 30):
+    def __init__(
+        self,
+        notifier: IdentifiedNotifier,
+        registry: TokenRegistry,
+        db: Database,
+        *,
+        absence_timeout: int = 30,
+    ):
+        """Initialize dependencies and absence tracking state."""
         self.notifier = notifier
         self.registry = registry
+        self.db = db
         self.absence_timeout = absence_timeout
         self.last_person_ts = time.time()
         self.absence_sent = False
@@ -39,8 +49,10 @@ class PresenceMonitor:
             self.absence_sent = False
         elif now - self.last_person_ts > self.absence_timeout and not self.absence_sent:
             self._notify_all("Ausência de humano", "Nenhuma pessoa detectada")
+            self.db.save_event({"type": "absence", "confidence": 0.0})
             self.absence_sent = True
 
     def _notify_all(self, title: str, message: str) -> None:
+        """Send a notification to all registered tokens."""
         for t in self.registry.get_all():
             self.notifier.notify(t, title=title, message=message)

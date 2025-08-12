@@ -3,12 +3,14 @@ import cv2
 
 class VideoProcessor:
     def __init__(self, camera_handler):
+        """Wrap a camera handler and load a YOLO model."""
         self.camera = camera_handler
 
         # Carrega modelo leve YOLOv8n (pré-treinado para detecção de pessoas)
-        self.model = YOLO("yolo11n.pt")  
+        self.model = YOLO("yolo11n.pt")
 
     def process_frame(self):
+        """Return frame with person detections drawn."""
         frame = self.camera.get_frame()
         if frame is None:
             return None
