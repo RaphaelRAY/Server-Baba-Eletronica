@@ -3,9 +3,13 @@ from unittest.mock import MagicMock, patch
 
 from src.monitor.presence_monitor import PresenceMonitor
 from src.db import Database
+from src.db.database import memory_events
 
 
 class TestPresenceMonitor(unittest.TestCase):
+    def setUp(self):
+        memory_events.clear()
+
     @patch('src.monitor.presence_monitor.time')
     def test_absence_and_camera_notifications(self, mock_time):
         notifier = MagicMock()

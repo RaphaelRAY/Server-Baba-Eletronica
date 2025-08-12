@@ -9,6 +9,9 @@ from sqlalchemy.orm import sessionmaker
 
 Base = declarative_base()
 
+# Lista global de eventos quando o backend está em memória
+memory_events: List[Dict[str, str]] = []
+
 
 class Event(Base):
     """Tabela de eventos para o banco SQL."""
@@ -30,7 +33,7 @@ class Database:
         """Initialize the database backend."""
         self.server = server
         if server == self.SERVER_MEMORY:
-            self._events: List[Dict[str, str]] = []
+            self._events = memory_events
         elif server == self.SERVER_MYSQL:
             if url is None:
                 raise ValueError("URL required for MySQL server")

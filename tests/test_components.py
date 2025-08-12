@@ -10,6 +10,7 @@ sys.modules.setdefault('ultralytics', MagicMock())
 
 from src.camera.handler import CameraHandler
 from src.processing.video_processor import VideoProcessor
+from src.db.database import memory_events
 
 class TestCameraHandler(unittest.TestCase):
     @patch('src.camera.handler.cv2.VideoCapture')
@@ -41,6 +42,9 @@ class TestVideoProcessor(unittest.TestCase):
         self.assertEqual(proc.get_processed_frame(), 'frame')
 
 class TestDatabase(unittest.TestCase):
+    def setUp(self):
+        memory_events.clear()
+
     def test_memory_mode(self):
         from src.db.database import Database
         db = Database(server=Database.SERVER_MEMORY)
