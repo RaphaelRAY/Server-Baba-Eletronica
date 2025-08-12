@@ -32,7 +32,7 @@ class TestEventsEndpoint(unittest.TestCase):
             mock_thread.return_value.join.return_value = None
             mock_db.get_recent_events.return_value = events
             client = TestClient(main.app)
-            resp = client.get('/api/events')
+            resp = client.get('/api/events/0')
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.json(), events)
             mock_db.get_recent_events.assert_called_once_with(offset=0, limit=30)
@@ -47,7 +47,7 @@ class TestEventsEndpoint(unittest.TestCase):
             mock_thread.return_value.join.return_value = None
             mock_db.get_recent_events.return_value = events
             client = TestClient(main.app)
-            resp = client.get('/api/events?offset=30&limit=30')
+            resp = client.get('/api/events/30?limit=30')
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.json(), events)
             mock_db.get_recent_events.assert_called_once_with(offset=30, limit=30)

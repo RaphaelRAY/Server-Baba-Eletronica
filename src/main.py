@@ -4,7 +4,7 @@ import cv2
 import logging
 from threading import Thread, Event
 
-from fastapi import FastAPI, HTTPException, Response, Query
+from fastapi import FastAPI, HTTPException, Response, Query, Path
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.camera import CameraHandler
@@ -174,8 +174,8 @@ def register_token(data: dict):
     return {"status": "ok"}
 
 
-@app.get("/api/events")
-def get_events(offset: int = Query(0, ge=0), limit: int = Query(30, gt=0)):
+@app.get("/api/events/{offset}")
+def get_events(offset: int = Path(..., ge=0), limit: int = Query(30, gt=0)):
     """Retorna eventos recentes com paginação."""
     return database.get_recent_events(offset=offset, limit=limit)
 
