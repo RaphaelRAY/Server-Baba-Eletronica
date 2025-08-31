@@ -85,3 +85,21 @@ class Database:
             }
             for e in events
         ]
+
+    def get_all_events(self):
+        """Return all events ordered by newest first."""
+
+        if self.server == self.SERVER_MEMORY:
+            return list(reversed(self._events))
+
+        session = self.Session()
+        events = session.query(Event).order_by(Event.timestamp.desc()).all()
+        session.close()
+        return [
+            {
+                "type": e.type,
+                "confidence": e.confidence,
+                "timestamp": e.timestamp.isoformat(),
+            }
+            for e in events
+        ]

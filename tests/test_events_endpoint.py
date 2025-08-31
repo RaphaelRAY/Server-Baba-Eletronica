@@ -22,6 +22,21 @@ import src.main as main
 
 
 class TestEventsEndpoint(unittest.TestCase):
+    def test_get_events_all(self):
+        events = [{"type": "x"}, {"type": "y"}, {"type": "z"}]
+        with patch.object(main.camera, 'start'), \
+             patch.object(main.camera, 'stop'), \
+             patch('src.main.Thread') as mock_thread, \
+             patch.object(main, 'database') as mock_db:
+            mock_thread.return_value.start.return_value = None
+            mock_thread.return_value.join.return_value = None
+            mock_db.get_all_events.return_value = events
+            client = TestClient(main.app)
+            resp = client.get('/api/events')
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json(), events)
+            mock_db.get_all_events.assert_called_once_with()
+
     def test_get_events_default(self):
         events = [{"type": "a"}, {"type": "b"}]
         with patch.object(main.camera, 'start'), \

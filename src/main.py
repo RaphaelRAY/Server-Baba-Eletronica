@@ -205,6 +205,12 @@ def register_token(data: dict):
     return {"status": "ok"}
 
 
+@app.get("/api/events")
+def get_all_events():
+    """Retorna todos os eventos (mais recentes primeiro)."""
+    return database.get_all_events()
+
+
 @app.get("/api/events/{offset}")
 def get_events(offset: int = Path(..., ge=0), limit: int = Query(30, gt=0)):
     """Retorna eventos recentes com paginação."""
