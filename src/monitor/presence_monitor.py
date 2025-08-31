@@ -4,6 +4,7 @@ from typing import List
 from src.notifications.identified_notifier import IdentifiedNotifier
 from src.notifications.token_registry import TokenRegistry
 from src.db import Database
+from src.utils.image_utils import encode_jpeg
 
 
 class PresenceMonitor:
@@ -25,6 +26,7 @@ class PresenceMonitor:
         self.last_person_ts = time.time()
         self.absence_sent = False
         self.camera_sent = False
+        self._last_frame = None  # armazena último frame útil para snapshot de eventos
 
     def check_camera(self, frame) -> None:
         """Notify if camera disconnected and persist events."""
@@ -33,7 +35,13 @@ class PresenceMonitor:
                 self._notify_all("Camera desconectada", "A camera parou de enviar frames", level="Importante")
                 # Persist event on first disconnection edge
                 try:
-                    self.db.save_event({"type": "camera_disconnected", "confidence": 0.0, "level": "Importante"})
+                    payload = {"type": "camera_disconnected", "confidence": 0.0, "level": "Importante"}
+                    if self._last_frame is not None:
+                        try:
+                            payload["image_bytes"] = encode_jpeg(self._last_frame)
+                        except Exception:
+                            pass
+                    self.db.save_event(payload)
                 except Exception:
                     pass
                 self.camera_sent = True
@@ -41,10 +49,17 @@ class PresenceMonitor:
             # If we had signaled a disconnection previously, persist reconnection
             if self.camera_sent:
                 try:
-                    self.db.save_event({"type": "camera_connected", "confidence": 0.0, "level": "Info"})
+                    payload = {"type": "camera_connected", "confidence": 0.0, "level": "Info"}
+                    try:
+                        payload["image_bytes"] = encode_jpeg(frame)
+                    except Exception:
+                        pass
+                    self.db.save_event(payload)
                 except Exception:
                     pass
             self.camera_sent = False
+            # Atualiza último frame útil
+            self._last_frame = frame
 
     def handle_detections(self, results: List) -> None:
         """Track person absence and send notification."""
@@ -60,7 +75,13 @@ class PresenceMonitor:
             self.absence_sent = False
         elif now - self.last_person_ts > self.absence_timeout and not self.absence_sent:
             self._notify_all("Ausência de humano", "Nenhuma pessoa detectada", level="Importante")
-            self.db.save_event({"type": "absence", "confidence": 0.0, "level": "Importante"})
+            payload = {"type": "absence", "confidence": 0.0, "level": "Importante"}
+            if self._last_frame is not None:
+                try:
+                    payload["image_bytes"] = encode_jpeg(self._last_frame)
+                except Exception:
+                    pass
+            self.db.save_event(payload)
             self.absence_sent = True
 
     def _notify_all(self, title: str, message: str, *, level: str = "info") -> None:

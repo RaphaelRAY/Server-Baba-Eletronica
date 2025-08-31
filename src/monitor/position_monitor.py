@@ -6,6 +6,7 @@ from ultralytics import YOLO
 from src.notifications.identified_notifier import IdentifiedNotifier
 from src.notifications.token_registry import TokenRegistry
 from src.db import Database
+from src.utils.image_utils import encode_jpeg
 
 
 class PositionMonitor:
@@ -27,9 +28,12 @@ class PositionMonitor:
         self.model = model or YOLO("yolo11n.pt")
         self.face_down_margin = face_down_margin
         self.face_down_sent = False
+        self._last_frame = None
 
     def analyze_frame(self, frame, show: bool = False) -> None:
         """Run pose model and optionally display keypoints."""
+        # Cache frame for potential snapshot on event
+        self._last_frame = frame
         results = self.model(frame)
         if show and results:
             cv2.imshow("Pose", results[0].plot())
@@ -51,7 +55,13 @@ class PositionMonitor:
                     # Persist event when first detected
                     if self.db is not None:
                         try:
-                            self.db.save_event({"type": "face_down", "confidence": 1.0, "level": "Urgente"})
+                            payload = {"type": "face_down", "confidence": 1.0, "level": "Urgente"}
+                            if self._last_frame is not None:
+                                try:
+                                    payload["image_bytes"] = encode_jpeg(self._last_frame)
+                                except Exception:
+                                    pass
+                            self.db.save_event(payload)
                         except Exception:
                             pass
                     self.face_down_sent = True
