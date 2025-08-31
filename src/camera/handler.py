@@ -1,5 +1,6 @@
 import socket
 import os
+import logging
 # Suprime logs do OpenCV/FFmpeg
 os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
 
@@ -94,7 +95,7 @@ class CameraHandler:
             self._thread.start()
 
         except Exception as e:
-            print(f"[Erro] Falha ao iniciar câmera: {e}")
+            logging.error("Falha ao iniciar câmera: %s", e)
 
     def _capture_loop(self):
         """Loop contínuo: lê frame, mede latência e armazena."""
@@ -190,7 +191,7 @@ class CameraHandler:
             ptz.Stop({"ProfileToken": token})
         
         except Exception as e:
-            print(f"[Erro PTZ] Falha no controle PTZ: {e}")
+            logging.warning("Falha no controle PTZ: %s", e)
 
 
     def stop(self) -> None:

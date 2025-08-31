@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 
 import firebase_admin
@@ -31,7 +32,9 @@ class FirebaseSetup:
             pass  # ainda não existe
 
         cred_path = os.getenv(env_var) or self._guess_default_path()
-        print(f"Usando credencial Firebase em: {cred_path or '(default)'}")
+        logging.info(
+            "Usando credencial Firebase em: %s", cred_path or "(default)"
+        )
 
         if cred_path:
             cred = credentials.Certificate(cred_path)

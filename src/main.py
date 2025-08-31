@@ -213,4 +213,5 @@ def get_latency():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("src.main:app", host="localhost", port=8000, reload=False)
+    # Pass the app object directly to avoid re-import and duplicate logs
+    uvicorn.run(app, host="localhost", port=8000, reload=False)
