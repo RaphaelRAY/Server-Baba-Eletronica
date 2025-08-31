@@ -1,4 +1,10 @@
 from ultralytics import YOLO
+import logging
+try:
+    from ultralytics.utils import LOGGER
+    LOGGER.setLevel(logging.ERROR)
+except Exception:
+    pass
 import cv2
 
 class VideoProcessor:

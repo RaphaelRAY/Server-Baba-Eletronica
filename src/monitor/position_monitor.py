@@ -2,6 +2,12 @@ from typing import List
 
 import cv2
 from ultralytics import YOLO
+import logging
+try:
+    from ultralytics.utils import LOGGER
+    LOGGER.setLevel(logging.ERROR)
+except Exception:
+    pass
 
 from src.notifications.identified_notifier import IdentifiedNotifier
 from src.notifications.token_registry import TokenRegistry
