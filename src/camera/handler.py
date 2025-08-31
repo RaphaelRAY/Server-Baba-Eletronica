@@ -53,6 +53,12 @@ class CameraHandler:
         self._reconnect_thread: Thread | None = None
         self._reconnect_delay: float = 5.0
 
+    def _sleep_interruptible(self, seconds: float, step: float = 0.1) -> None:
+        """Sleep in small steps so stop() can interrupt long waits."""
+        deadline = time.time() + max(0.0, seconds)
+        while not self._stop.is_set() and time.time() < deadline:
+            time.sleep(min(step, max(0.0, deadline - time.time())))
+
     def start(self) -> None:
         """Inicializa ONVIF (uma vez), abre stream RTSP com timeout e inicia thread."""
         # Se já está rodando, ignora
@@ -124,7 +130,8 @@ class CameraHandler:
         except Exception:
             pass
         self._cap = None
-        time.sleep(delay)
+        # Wait but allow stop() to interrupt
+        self._sleep_interruptible(delay)
         if self._stream_uri:
             try:
                 self._cap = cv2.VideoCapture(self._stream_uri, cv2.CAP_FFMPEG)
@@ -182,7 +189,8 @@ class CameraHandler:
             self._reconnecting = True
             while not self._stop.is_set():
                 try:
-                    time.sleep(self._reconnect_delay)
+                    # Allow early exit on stop
+                    self._sleep_interruptible(self._reconnect_delay)
                     self._open_connections()
                     logging.info("Câmera reconectada com sucesso")
                     break
@@ -238,6 +246,10 @@ class CameraHandler:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=1)
+        # Ensure reconnection loop ends as well
+        if self._reconnect_thread and self._reconnect_thread.is_alive():
+            # Give it a short chance to exit
+            self._reconnect_thread.join(timeout=1)
         if self._cap:
             self._cap.release()
         if self._camera:

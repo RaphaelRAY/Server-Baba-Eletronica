@@ -169,26 +169,30 @@ def stream():
     """MJPEG stream com overlay de latência."""
 
     def mjpeg_generator():
-        while True:
-            frame = camera.get_frame()
-            if frame is None:
-                time.sleep(0.1)
-                continue
-            lat = camera.get_last_latency() or 0.0
-            cv2.putText(
-                frame,
-                f"Lat: {lat*1000:.1f} ms",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 0),
-                2,
-            )
-            _, jpg = cv2.imencode(".jpg", frame)
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n" + jpg.tobytes() + b"\r\n"
-            )
+        try:
+            while not t_processing_stop.is_set():
+                frame = camera.get_frame()
+                if frame is None:
+                    time.sleep(0.1)
+                    continue
+                lat = camera.get_last_latency() or 0.0
+                cv2.putText(
+                    frame,
+                    f"Lat: {lat*1000:.1f} ms",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 0),
+                    2,
+                )
+                _, jpg = cv2.imencode(".jpg", frame)
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + jpg.tobytes() + b"\r\n"
+                )
+        except GeneratorExit:
+            # Client disconnected or server shutting down; exit quietly
+            return
 
     return StreamingResponse(
         mjpeg_generator(), media_type="multipart/x-mixed-replace; boundary=frame"
