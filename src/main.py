@@ -39,7 +39,7 @@ if db_url:
 else:
     database = Database(server=Database.SERVER_MEMORY)
 presence_monitor = PresenceMonitor(notifier, token_registry, database)
-position_monitor = PositionMonitor(notifier, token_registry)
+position_monitor = PositionMonitor(notifier, token_registry, database)
 
 # Tolerate missing Firebase setup so app keeps running
 try:

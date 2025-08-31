@@ -5,6 +5,7 @@ from ultralytics import YOLO
 
 from src.notifications.identified_notifier import IdentifiedNotifier
 from src.notifications.token_registry import TokenRegistry
+from src.db import Database
 
 
 class PositionMonitor:
@@ -14,6 +15,7 @@ class PositionMonitor:
         self,
         notifier: IdentifiedNotifier,
         registry: TokenRegistry,
+        db: Database | None = None,
         *,
         model: YOLO | None = None,
         face_down_margin: float = 20.0,
@@ -21,6 +23,7 @@ class PositionMonitor:
         """Store dependencies and pose parameters."""
         self.notifier = notifier
         self.registry = registry
+        self.db = db
         self.model = model or YOLO("yolo11n.pt")
         self.face_down_margin = face_down_margin
         self.face_down_sent = False
@@ -45,6 +48,12 @@ class PositionMonitor:
             if nose_y > max(left_shoulder_y, right_shoulder_y) + self.face_down_margin:
                 if not self.face_down_sent:
                     self._notify_all("Bebê de bruços", "Rosto voltado para baixo")
+                    # Persist event when first detected
+                    if self.db is not None:
+                        try:
+                            self.db.save_event({"type": "face_down", "confidence": 1.0})
+                        except Exception:
+                            pass
                     self.face_down_sent = True
                 return
         self.face_down_sent = False

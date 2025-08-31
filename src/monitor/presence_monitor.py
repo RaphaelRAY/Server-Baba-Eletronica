@@ -31,8 +31,19 @@ class PresenceMonitor:
         if frame is None:
             if not self.camera_sent:
                 self._notify_all("Camera desconectada", "A camera parou de enviar frames")
+                # Persist event on first disconnection edge
+                try:
+                    self.db.save_event({"type": "camera_disconnected", "confidence": 0.0})
+                except Exception:
+                    pass
                 self.camera_sent = True
         else:
+            # If we had signaled a disconnection previously, persist reconnection
+            if self.camera_sent:
+                try:
+                    self.db.save_event({"type": "camera_connected", "confidence": 0.0})
+                except Exception:
+                    pass
             self.camera_sent = False
 
     def handle_detections(self, results: List) -> None:
