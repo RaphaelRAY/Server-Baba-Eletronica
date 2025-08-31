@@ -15,6 +15,11 @@ from src.monitor.position_monitor import PositionMonitor
 from src.firebase_setup import FirebaseSetup
 from src.db import Database
 
+# Load environment variables from .env
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Configurações e inicialização de câmera e processador
 driver = {
     "host": os.getenv("CAM_HOST", "192.168.0.176"),
@@ -35,7 +40,15 @@ else:
     database = Database(server=Database.SERVER_MEMORY)
 presence_monitor = PresenceMonitor(notifier, token_registry, database)
 position_monitor = PositionMonitor(notifier, token_registry)
-FirebaseSetup().init_firebase()
+
+# Tolerate missing Firebase setup so app keeps running
+try:
+    FirebaseSetup().init_firebase(raise_if_missing=False)
+    logging.info("Firebase initialized (or using Application Default)")
+except Exception as e:
+    logging.warning(
+        "Firebase not initialized; continuing without push notifications: %s", e
+    )
 
 # Mostrar poses em janela (alterar para True se desejar)
 SHOW_POSE_WINDOW = False
