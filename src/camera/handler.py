@@ -48,6 +48,11 @@ class CameraHandler:
         # Cache da URI de streaming
         self._stream_uri: str = None
 
+        # Reconexão
+        self._reconnecting: bool = False
+        self._reconnect_thread: Thread | None = None
+        self._reconnect_delay: float = 5.0
+
     def start(self) -> None:
         """Inicializa ONVIF (uma vez), abre stream RTSP com timeout e inicia thread."""
         # Se já está rodando, ignora
@@ -55,52 +60,19 @@ class CameraHandler:
             return
 
         try:
-            # 1) Descobre URI apenas na 1ª vez
-            if not self._stream_uri:
-                self._camera = ONVIFCamera(self.host, self.port, self.user, self.passwd)
-                media = self._camera.create_media_service()
-                profile = media.GetProfiles()[0]
-                uri = media.GetStreamUri({
-                    "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
-                    "ProfileToken": profile.token
-                }).Uri
-                if uri.startswith("rtsp://"):
-                    uri = uri.replace("rtsp://", f"rtsp://{self.user}:{self.passwd}@")
-                self._stream_uri = uri
-
-            # 2) Abre captura com FFmpeg usando a URI cacheada
-            #    e configura timeouts de open/read
-            self._cap = cv2.VideoCapture(self._stream_uri, cv2.CAP_FFMPEG)
-            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-            if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
-                self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-            # ↓↓↓ timeouts em milissegundos ↓↓↓
-            if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
-                self._cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
-            if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
-                self._cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
-
-            # -- alternativa usando opts para forçar TCP e stimeout (µs) --
-            # opts = ["rtsp_transport","tcp","stimeout","2000000"]
-            # self._cap = cv2.VideoCapture(self._stream_uri, cv2.CAP_FFMPEG, opts)
-
-            if not self._cap.isOpened():
-                raise RuntimeError(f"Falha ao abrir stream: {self._stream_uri}")
-
-            # 3) Inicia thread de captura
-            self._stop.clear()
-            self._thread = Thread(target=self._capture_loop, daemon=True)
-            self._thread.start()
+            self._open_connections()
 
         except Exception as e:
             logging.error("Falha ao iniciar câmera: %s", e)
+            # agenda reconexão periódica
+            self._schedule_reconnect()
 
     def _capture_loop(self):
         """Loop contínuo: lê frame, mede latência e armazena."""
         while not self._stop.is_set():
             if not self._cap or not self._cap.isOpened():
+                # tenta reabrir com atraso para evitar loop apertado
+                self._restart_capture(delay=self._reconnect_delay)
                 time.sleep(0.1)
                 continue
 
@@ -115,8 +87,8 @@ class CameraHandler:
                     self._last_latency = latency
                     self._latencies.append(latency)
             else:
-                # reconecta rapidamente usando só a URI
-                self._restart_capture()
+                # reconecta com atraso fixo de 5s
+                self._restart_capture(delay=self._reconnect_delay)
 
     def get_frame(self):
         """Retorna uma cópia do último frame ou None."""
@@ -144,20 +116,87 @@ class CameraHandler:
             "count": len(vals),
         }
 
-    def _restart_capture(self):
-        """Reabre o VideoCapture a partir da URI cacheada (sem nova ONVIF)."""
+    def _restart_capture(self, *, delay: float = 5.0):
+        """Reabre o VideoCapture a partir da URI cacheada após um atraso."""
         try:
             if self._cap:
                 self._cap.release()
-        except:
+        except Exception:
             pass
         self._cap = None
-        time.sleep(0.1)
+        time.sleep(delay)
         if self._stream_uri:
             try:
                 self._cap = cv2.VideoCapture(self._stream_uri, cv2.CAP_FFMPEG)
-            except:
-                pass
+                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+                    self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+                    self._cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
+                if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+                    self._cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
+            except Exception as e:
+                logging.warning("Falha ao reabrir stream: %s", e)
+
+    def _open_connections(self) -> None:
+        """Prepara URI via ONVIF e inicia captura + thread."""
+        # 1) Descobre URI apenas na 1ª vez
+        if not self._stream_uri:
+            self._camera = ONVIFCamera(self.host, self.port, self.user, self.passwd)
+            media = self._camera.create_media_service()
+            profile = media.GetProfiles()[0]
+            uri = media.GetStreamUri({
+                "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
+                "ProfileToken": profile.token,
+            }).Uri
+            if uri.startswith("rtsp://"):
+                uri = uri.replace("rtsp://", f"rtsp://{self.user}:{self.passwd}@")
+            self._stream_uri = uri
+
+        # 2) Abre captura com FFmpeg usando a URI cacheada e configura timeouts
+        self._cap = cv2.VideoCapture(self._stream_uri, cv2.CAP_FFMPEG)
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+            self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+            self._cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
+        if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+            self._cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
+
+        if not self._cap.isOpened():
+            raise RuntimeError(f"Falha ao abrir stream: {self._stream_uri}")
+
+        # 3) Inicia thread de captura
+        self._stop.clear()
+        self._thread = Thread(target=self._capture_loop, daemon=True)
+        self._thread.start()
+
+    def _schedule_reconnect(self) -> None:
+        """Agenda tentativas de reconexão a cada 5s até sucesso."""
+        if self._reconnecting or self._stop.is_set():
+            return
+
+        def _loop():
+            self._reconnecting = True
+            while not self._stop.is_set():
+                try:
+                    time.sleep(self._reconnect_delay)
+                    self._open_connections()
+                    logging.info("Câmera reconectada com sucesso")
+                    break
+                except Exception as e:
+                    logging.warning("Tentativa de reconexão falhou: %s", e)
+                    continue
+            self._reconnecting = False
+
+        self._reconnect_thread = Thread(target=_loop, daemon=True)
+        self._reconnect_thread.start()
+
+    def is_running(self) -> bool:
+        """Retorna True se a thread e a captura estiverem ativas."""
+        return bool(self._cap and self._cap.isOpened() and self._thread and self._thread.is_alive())
 
     def control_ptz(self, err_x: float, err_y: float, kp: float = 0.6):
         """Controla movimento PTZ com base no erro de posição da detecção."""
