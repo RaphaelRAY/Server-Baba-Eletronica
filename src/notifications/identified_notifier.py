@@ -16,6 +16,14 @@ class IdentifiedNotifier:
         self._notifier = Notifier(api_key)
         self._last_sent: float = 0.0
 
+    # Allowed event/notification levels in PT-BR
+    _LEVELS = {"Info", "Leve", "Importante", "Urgente"}
+
+    @staticmethod
+    def _normalize_level(level: Optional[str]) -> str:
+        lvl = (level or "Info").strip().title()
+        return lvl if lvl in IdentifiedNotifier._LEVELS else "Info"
+
     def notify_if_identified(
         self,
         confidence: float,
@@ -23,11 +31,11 @@ class IdentifiedNotifier:
         *,
         title: str = "Pessoa identificada",
         message: str = "Uma pessoa conhecida foi detectada",
-        level: str = "info",
+        level: str = "Info",
     ) -> None:
         """Send a notification if confidence exceeds threshold and cooldown expired.
 
-        Adds a level tag to the title (e.g., [INFO], [WARNING], [CRITICAL]).
+        Adds a level tag to the title (e.g., [Info], [Leve], [Importante], [Urgente]).
         """
         if confidence < self._threshold:
             return
@@ -36,15 +44,17 @@ class IdentifiedNotifier:
         if now - self._last_sent < self._cooldown:
             return
 
-        prefixed_title = f"[{level.upper()}] {title}" if level else title
+        lvl = self._normalize_level(level)
+        prefixed_title = f"[{lvl}] {title}" if lvl else title
         self._notifier.send(token, prefixed_title, message)
         self._last_sent = now
 
-    def notify(self, token: str, *, title: str, message: str, level: str = "info") -> None:
+    def notify(self, token: str, *, title: str, message: str, level: str = "Info") -> None:
         """Send a generic notification respecting cooldown with level prefix."""
         now = time.time()
         if now - self._last_sent < self._cooldown:
             return
-        prefixed_title = f"[{level.upper()}] {title}" if level else title
+        lvl = self._normalize_level(level)
+        prefixed_title = f"[{lvl}] {title}" if lvl else title
         self._notifier.send(token, prefixed_title, message)
         self._last_sent = now

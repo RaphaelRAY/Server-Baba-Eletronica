@@ -30,10 +30,10 @@ class PresenceMonitor:
         """Notify if camera disconnected and persist events."""
         if frame is None:
             if not self.camera_sent:
-                self._notify_all("Camera desconectada", "A camera parou de enviar frames", level="warning")
+                self._notify_all("Camera desconectada", "A camera parou de enviar frames", level="Importante")
                 # Persist event on first disconnection edge
                 try:
-                    self.db.save_event({"type": "camera_disconnected", "confidence": 0.0, "level": "warning"})
+                    self.db.save_event({"type": "camera_disconnected", "confidence": 0.0, "level": "Importante"})
                 except Exception:
                     pass
                 self.camera_sent = True
@@ -41,7 +41,7 @@ class PresenceMonitor:
             # If we had signaled a disconnection previously, persist reconnection
             if self.camera_sent:
                 try:
-                    self.db.save_event({"type": "camera_connected", "confidence": 0.0, "level": "info"})
+                    self.db.save_event({"type": "camera_connected", "confidence": 0.0, "level": "Info"})
                 except Exception:
                     pass
             self.camera_sent = False
@@ -59,8 +59,8 @@ class PresenceMonitor:
             self.last_person_ts = now
             self.absence_sent = False
         elif now - self.last_person_ts > self.absence_timeout and not self.absence_sent:
-            self._notify_all("Ausência de humano", "Nenhuma pessoa detectada", level="warning")
-            self.db.save_event({"type": "absence", "confidence": 0.0, "level": "warning"})
+            self._notify_all("Ausência de humano", "Nenhuma pessoa detectada", level="Importante")
+            self.db.save_event({"type": "absence", "confidence": 0.0, "level": "Importante"})
             self.absence_sent = True
 
     def _notify_all(self, title: str, message: str, *, level: str = "info") -> None:
