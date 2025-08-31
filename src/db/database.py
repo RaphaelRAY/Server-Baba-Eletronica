@@ -50,6 +50,7 @@ class Database:
             event = {
                 "type": data.get("type"),
                 "confidence": data.get("confidence"),
+                "level": data.get("level", "info"),
                 "timestamp": datetime.datetime.utcnow().isoformat(),
             }
             self._events.append(event)

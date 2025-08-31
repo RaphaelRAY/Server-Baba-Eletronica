@@ -27,13 +27,13 @@ class PresenceMonitor:
         self.camera_sent = False
 
     def check_camera(self, frame) -> None:
-        """Notify if camera disconnected."""
+        """Notify if camera disconnected and persist events."""
         if frame is None:
             if not self.camera_sent:
-                self._notify_all("Camera desconectada", "A camera parou de enviar frames")
+                self._notify_all("Camera desconectada", "A camera parou de enviar frames", level="warning")
                 # Persist event on first disconnection edge
                 try:
-                    self.db.save_event({"type": "camera_disconnected", "confidence": 0.0})
+                    self.db.save_event({"type": "camera_disconnected", "confidence": 0.0, "level": "warning"})
                 except Exception:
                     pass
                 self.camera_sent = True
@@ -41,7 +41,7 @@ class PresenceMonitor:
             # If we had signaled a disconnection previously, persist reconnection
             if self.camera_sent:
                 try:
-                    self.db.save_event({"type": "camera_connected", "confidence": 0.0})
+                    self.db.save_event({"type": "camera_connected", "confidence": 0.0, "level": "info"})
                 except Exception:
                     pass
             self.camera_sent = False
@@ -59,11 +59,11 @@ class PresenceMonitor:
             self.last_person_ts = now
             self.absence_sent = False
         elif now - self.last_person_ts > self.absence_timeout and not self.absence_sent:
-            self._notify_all("Ausência de humano", "Nenhuma pessoa detectada")
-            self.db.save_event({"type": "absence", "confidence": 0.0})
+            self._notify_all("Ausência de humano", "Nenhuma pessoa detectada", level="warning")
+            self.db.save_event({"type": "absence", "confidence": 0.0, "level": "warning"})
             self.absence_sent = True
 
-    def _notify_all(self, title: str, message: str) -> None:
-        """Send a notification to all registered tokens."""
+    def _notify_all(self, title: str, message: str, *, level: str = "info") -> None:
+        """Send a notification to all registered tokens with level."""
         for t in self.registry.get_all():
-            self.notifier.notify(t, title=title, message=message)
+            self.notifier.notify(t, title=title, message=message, level=level)

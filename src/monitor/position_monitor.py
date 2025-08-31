@@ -47,18 +47,18 @@ class PositionMonitor:
             right_shoulder_y = keypoints.xy[6][1]
             if nose_y > max(left_shoulder_y, right_shoulder_y) + self.face_down_margin:
                 if not self.face_down_sent:
-                    self._notify_all("Bebê de bruços", "Rosto voltado para baixo")
+                    self._notify_all("Bebê de bruços", "Rosto voltado para baixo", level="critical")
                     # Persist event when first detected
                     if self.db is not None:
                         try:
-                            self.db.save_event({"type": "face_down", "confidence": 1.0})
+                            self.db.save_event({"type": "face_down", "confidence": 1.0, "level": "critical"})
                         except Exception:
                             pass
                     self.face_down_sent = True
                 return
         self.face_down_sent = False
 
-    def _notify_all(self, title: str, message: str) -> None:
-        """Send a notification to all tokens."""
+    def _notify_all(self, title: str, message: str, *, level: str = "info") -> None:
+        """Send a notification to all tokens with level."""
         for token in self.registry.get_all():
-            self.notifier.notify(token, title=title, message=message)
+            self.notifier.notify(token, title=title, message=message, level=level)
