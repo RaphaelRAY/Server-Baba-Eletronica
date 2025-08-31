@@ -6,6 +6,7 @@ from threading import Thread, Event
 
 from fastapi import FastAPI, HTTPException, Response, Query, Path
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from src.camera import CameraHandler
 from src.processing import VideoProcessor
@@ -126,6 +127,23 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# CORS configuration
+cors_origins_env = os.getenv("CORS_ORIGINS", "*")
+# Split by comma, trim spaces; keep ["*"] if wildcard
+allowed_origins = (
+    ["*"]
+    if cors_origins_env.strip() == "*"
+    else [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+)
+allow_credentials = os.getenv("CORS_ALLOW_CREDENTIALS", "false").lower() == "true"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=allow_credentials,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/api/status", response_class=Response)
