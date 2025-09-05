@@ -7,6 +7,7 @@ from threading import Thread, Event
 from fastapi import FastAPI, HTTPException, Response, Query, Path
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from src.utils.image_utils import encode_jpeg
 
 from src.camera import CameraHandler
 from src.processing import VideoProcessor
@@ -22,6 +23,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configurações e inicialização de câmera e processador
+# Logging básico configurável por env (LOG_LEVEL)
+level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+level = getattr(logging, level_name, logging.INFO)
+logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
 driver = {
     "host": os.getenv("CAM_HOST", "192.168.0.176"),
     "port": int(os.getenv("CAM_PORT", 80)),
@@ -162,6 +168,27 @@ def get_snapshot():
         raise HTTPException(503, "Sem frame disponível")
     _, jpg = cv2.imencode(".jpg", frame)
     return Response(jpg.tobytes(), media_type="image/jpeg")
+
+
+@app.get("/api/pose-snapshot", response_class=Response)
+def get_pose_snapshot():
+    """Retorna snapshot com overlay da análise de pose (YOLO Pose)."""
+    frame = camera.get_frame()
+    if frame is None:
+        raise HTTPException(503, "Sem frame disponível")
+
+    try:
+        results = position_monitor.model(frame)
+        if not results:
+            raise HTTPException(503, "Sem resultado de pose disponível")
+
+        plotted = results[0].plot()
+        jpg_bytes = encode_jpeg(plotted)
+        return Response(jpg_bytes, media_type="image/jpeg")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Falha ao gerar pose snapshot: {e}")
 
 
 @app.get("/api/stream")
