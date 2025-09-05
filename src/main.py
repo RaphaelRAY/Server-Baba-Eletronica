@@ -58,7 +58,7 @@ except Exception as e:
     )
 
 # Mostrar poses em janela (alterar para True se desejar)
-SHOW_POSE_WINDOW = False
+SHOW_POSE_WINDOW = True
 
 # Eventos para controle de threads de processamento
 t_processing_stop = Event()
@@ -120,6 +120,7 @@ async def lifespan(app: FastAPI):
     global t_processing_thread
     t_processing_thread = Thread(target=processing_loop, daemon=True)
     t_processing_thread.start()
+    
 
     yield  # aplica as rotas e mantém serviço vivo
 
@@ -194,6 +195,12 @@ def get_pose_snapshot():
 @app.get("/api/stream")
 def stream():
     """MJPEG stream com overlay de latência."""
+
+    # Verifica disponibilidade de frame antes de iniciar o stream
+    # Se não houver frame, retorna erro em vez de manter conexão aberta.
+    first_frame = camera.get_frame()
+    if first_frame is None:
+        raise HTTPException(503, "Sem frame disponível para streaming")
 
     def mjpeg_generator():
         try:
