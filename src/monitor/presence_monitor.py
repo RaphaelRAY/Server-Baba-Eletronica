@@ -17,6 +17,8 @@ class PresenceMonitor:
         db: Database,
         *,
         absence_timeout: int = 30,
+        camera_timeout: float = 0.0,
+        camera_miss_threshold: int = 0,
     ):
         """Initialize dependencies and absence tracking state."""
         self.notifier = notifier
@@ -26,11 +28,24 @@ class PresenceMonitor:
         self.last_person_ts = time.time()
         self.absence_sent = False
         self.camera_sent = False
+        self.camera_timeout = float(camera_timeout)
+        self.camera_miss_threshold = int(camera_miss_threshold)
+        self.last_frame_ts = time.time()  # atualizado ao receber frame válido
         self._last_frame = None  # armazena último frame útil para snapshot de eventos
+        self._miss_count = 0  # contagem de leituras None consecutivas
 
     def check_camera(self, frame) -> None:
-        """Notify if camera disconnected and persist events."""
+        """Notify if camera disconnected and persist events with debounce timeout."""
+        now = time.time()
         if frame is None:
+            # Incrementa contagem de falhas consecutivas
+            self._miss_count += 1
+            # Debounce por tempo: só sinaliza se passou do timeout (se configurado)
+            if self.camera_timeout > 0 and (now - self.last_frame_ts) < self.camera_timeout:
+                return
+            # Debounce por contagem de misses: aguarda N leituras None consecutivas (se configurado)
+            if self.camera_miss_threshold > 0 and self._miss_count < self.camera_miss_threshold:
+                return
             if not self.camera_sent:
                 self._notify_all("Camera desconectada", "A camera parou de enviar frames", level="Importante")
                 # Persist event on first disconnection edge
@@ -58,8 +73,10 @@ class PresenceMonitor:
                 except Exception:
                     pass
             self.camera_sent = False
-            # Atualiza último frame útil
+            # Update last valid frame time and cache
+            self.last_frame_ts = now
             self._last_frame = frame
+            self._miss_count = 0
 
     def handle_detections(self, results: List) -> None:
         """Track person absence and send notification."""

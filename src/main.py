@@ -45,7 +45,16 @@ if db_url:
     database = Database(server=Database.SERVER_MYSQL, url=db_url)
 else:
     database = Database(server=Database.SERVER_MEMORY)
-presence_monitor = PresenceMonitor(notifier, token_registry, database)
+# Configurable debounce for camera disconnection (in seconds)
+cam_disc_secs = float(os.getenv("CAM_DISCONNECT_SECS", "0"))
+cam_disc_misses = int(os.getenv("CAM_DISCONNECT_MISSES", "0"))
+presence_monitor = PresenceMonitor(
+    notifier,
+    token_registry,
+    database,
+    camera_timeout=cam_disc_secs,
+    camera_miss_threshold=cam_disc_misses,
+)
 position_monitor = PositionMonitor(notifier, token_registry, database)
 
 # Tolerate missing Firebase setup so app keeps running
@@ -251,8 +260,13 @@ def get_all_events():
 
 @app.get("/api/events/{offset}")
 def get_events(offset: int = Path(..., ge=0), limit: int = Query(30, gt=0)):
-    """Retorna eventos recentes com paginação."""
-    return database.get_recent_events(offset=offset, limit=limit)
+    """Retorna eventos recentes sem campos de imagem (paginado)."""
+    events = database.get_recent_events(offset=offset, limit=limit)
+    # Strip image fields to keep payload light
+    def _strip(ev: dict) -> dict:
+        return {k: v for k, v in ev.items() if k not in ("image_path", "image_b64", "image_bytes")}
+
+    return [_strip(e) for e in events]
 
 
 @app.get("/api/latency")
