@@ -5,6 +5,8 @@ from typing import List, Dict, Optional
 
 import os
 import base64
+import logging
+logger = logging.getLogger(__name__)
 try:
     from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
     from sqlalchemy.ext.declarative import declarative_base
@@ -100,6 +102,16 @@ class Database:
                 "image_b64": img_b64,
             }
             self._events.append(event)
+            try:
+                logger.info(
+                    "Evento salvo (memory): type=%s level=%s conf=%s image=%s",
+                    event.get("type"),
+                    event.get("level"),
+                    event.get("confidence"),
+                    "yes" if image_path or img_b64 else "no",
+                )
+            except Exception:
+                pass
         else:
             session = self.Session()
             try:
@@ -111,6 +123,17 @@ class Database:
                 )
                 session.add(event)
                 session.commit()
+                try:
+                    logger.info(
+                        "Evento salvo (sql): id=%s type=%s level=%s conf=%s image=%s",
+                        getattr(event, "id", None),
+                        getattr(event, "type", None),
+                        getattr(event, "level", None),
+                        getattr(event, "confidence", None),
+                        "yes" if image_path else "no",
+                    )
+                except Exception:
+                    pass
             finally:
                 session.close()
 

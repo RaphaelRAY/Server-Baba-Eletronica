@@ -34,8 +34,27 @@ driver = {
     "user": os.getenv("CAM_USER", "admin"),
     "passwd": os.getenv("CAM_PASS", "123456"),
 }
+
+# Fonte de vídeo configurável
+video_source = os.getenv("VIDEO_SOURCE", "onvif").lower()
+rtsp_url = os.getenv("RTSP_URL")
+video_path = os.getenv("VIDEO_PATH")
+device_index_env = os.getenv("DEVICE_INDEX")
+device_index = int(device_index_env) if device_index_env is not None and device_index_env != "" else None
+sync_file_fps = os.getenv("SYNC_FILE_FPS", "true").lower() == "true"
+file_fps_env = os.getenv("FILE_FPS")
+file_fps = float(file_fps_env) if file_fps_env not in (None, "") else None
+
 # Inicialização de serviços
-camera = CameraHandler(**driver)
+camera = CameraHandler(
+    **driver,
+    source=video_source,
+    rtsp_url=rtsp_url,
+    video_path=video_path,
+    device_index=device_index,
+    sync_file_fps=sync_file_fps,
+    file_fps=file_fps,
+)
 processor = VideoProcessor(camera)
 token_registry = TokenRegistry()
 fcm_key = os.getenv("FCM_KEY", "")
@@ -115,8 +134,8 @@ def processing_loop():
                 err_x = (cx - width / 2) / width
                 err_y = (cy - height / 2) / height
 
-                # Só move se estiver fora da zona morta
-                if abs(err_x) > 0.1 or abs(err_y) > 0.1:
+                # Só move se estiver fora da zona morta e PTZ habilitado
+                if camera.ptz_enabled and (abs(err_x) > 0.1 or abs(err_y) > 0.1):
                     camera.control_ptz(err_x, err_y, kp=0.6)
 
                 break  # só a primeira detecção relevante
@@ -130,7 +149,7 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logging.info("Iniciando câmera ONVIF e loop de análise")
+    logging.info(f"Iniciando câmera ({video_source}) e loop de análise")
     # 1) Inicia captura de vídeo
     camera.start()
     # 2) Reseta evento e inicia thread de processamento
@@ -220,6 +239,25 @@ def stream():
     if first_frame is None:
         raise HTTPException(503, "Sem frame disponível para streaming")
 
+    # Define FPS de saída do stream
+    stream_fps_env = os.getenv("STREAM_FPS")
+    if stream_fps_env not in (None, ""):
+        try:
+            target_fps = float(stream_fps_env)
+        except Exception:
+            target_fps = None
+    else:
+        # Se arquivo, tente sincronizar com FPS de origem; senão, padrão 15
+        target_fps = None
+        try:
+            if getattr(camera, "source", None) == "file" and getattr(camera, "_source_fps", None):
+                target_fps = float(camera._source_fps)
+        except Exception:
+            pass
+        if not target_fps:
+            target_fps = 15.0
+    frame_period = 1.0 / target_fps if target_fps and target_fps > 0 else None
+
     def mjpeg_generator():
         try:
             while not t_processing_stop.is_set():
@@ -242,6 +280,9 @@ def stream():
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n" + jpg.tobytes() + b"\r\n"
                 )
+                if frame_period:
+                    # Ritmo estável do stream
+                    time.sleep(frame_period)
         except GeneratorExit:
             # Client disconnected or server shutting down; exit quietly
             return
