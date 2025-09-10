@@ -55,7 +55,16 @@ presence_monitor = PresenceMonitor(
     camera_timeout=cam_disc_secs,
     camera_miss_threshold=cam_disc_misses,
 )
-position_monitor = PositionMonitor(notifier, token_registry, database)
+# Pose detection thresholds (optional configuration)
+pose_face_conf = float(os.getenv("POSE_FACE_CONF_MIN", "0.3"))
+pose_no_face_frames = int(os.getenv("POSE_NO_FACE_FRAMES", "12"))
+position_monitor = PositionMonitor(
+    notifier,
+    token_registry,
+    database,
+    face_conf_min=pose_face_conf,
+    no_face_frames_threshold=pose_no_face_frames,
+)
 
 # Tolerate missing Firebase setup so app keeps running
 try:

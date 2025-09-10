@@ -27,6 +27,8 @@ class PositionMonitor:
         *,
         model: YOLO | None = None,
         face_down_margin: float = 20.0,
+        face_conf_min: float = 0.3,
+        no_face_frames_threshold: int = 12,
     ):
         """Store dependencies and pose parameters."""
         self.notifier = notifier
@@ -34,7 +36,11 @@ class PositionMonitor:
         self.db = db
         self.model = model or YOLO("yolo11n-pose.pt")
         self.face_down_margin = face_down_margin
+        self.face_conf_min = float(face_conf_min)
+        self.no_face_frames_threshold = int(no_face_frames_threshold)
         self.face_down_sent = False
+        self.face_down_suspected_sent = False
+        self._no_face_count = 0
         self._last_frame = None
 
     def analyze_frame(self, frame, show: bool = False) -> None:
@@ -75,7 +81,30 @@ class PositionMonitor:
                 nose_y = keypoints.xy[0][1]
                 left_shoulder_y = keypoints.xy[5][1]
                 right_shoulder_y = keypoints.xy[6][1]
-            if nose_y > max(left_shoulder_y, right_shoulder_y) + self.face_down_margin:
+            # Confidence of face keypoints (if available)
+            confs = self._extract_confidences(keypoints)
+            def _conf(idx: int, default: float = 1.0) -> float:
+                try:
+                    c = confs[idx]
+                    return float(c) if c is not None else default
+                except Exception:
+                    return default
+
+            face_visible = (
+                _conf(0, 0.0) >= self.face_conf_min  # nose
+                or _conf(1, 0.0) >= self.face_conf_min  # left_eye
+                or _conf(2, 0.0) >= self.face_conf_min  # right_eye
+                or _conf(3, 0.0) >= self.face_conf_min  # left_ear
+                or _conf(4, 0.0) >= self.face_conf_min  # right_ear
+            )
+
+            shoulders_y_max = max(left_shoulder_y, right_shoulder_y)
+            strong_face_down = nose_y > shoulders_y_max + self.face_down_margin
+
+            if strong_face_down:
+                # reset no-face state
+                self._no_face_count = 0
+                self.face_down_suspected_sent = False
                 if not self.face_down_sent:
                     self._notify_all("Bebê de bruços", "Rosto voltado para baixo", level="Urgente")
                     # Persist event when first detected
@@ -92,6 +121,41 @@ class PositionMonitor:
                             pass
                     self.face_down_sent = True
                 return
+
+            # Weak/suspected face-down: face not visible for consecutive frames
+            if not face_visible:
+                self._no_face_count += 1
+                if (
+                    self._no_face_count >= self.no_face_frames_threshold
+                    and not self.face_down_suspected_sent
+                ):
+                    # Raise a suspected event (lower confidence)
+                    self._notify_all(
+                        "Possível bebê de bruços",
+                        "Rosto não visível e posição suspeita",
+                        level="Importante",
+                    )
+                    if self.db is not None:
+                        try:
+                            payload = {
+                                "type": "face_down_suspected",
+                                "confidence": 0.5,
+                                "level": "Importante",
+                            }
+                            if self._last_frame is not None:
+                                try:
+                                    payload["image_bytes"] = encode_jpeg(self._last_frame)
+                                except Exception:
+                                    pass
+                            self.db.save_event(payload)
+                        except Exception:
+                            pass
+                    self.face_down_suspected_sent = True
+                # continue to next result if any
+            else:
+                # Face visible resets suspected counter
+                self._no_face_count = 0
+                self.face_down_suspected_sent = False
         self.face_down_sent = False
 
     def _notify_all(self, title: str, message: str, *, level: str = "info") -> None:
@@ -139,5 +203,51 @@ class PositionMonitor:
                     if x is not None and y is not None:
                         points.append((x, y))
             return points
+        except Exception:
+            return []
+
+    def _extract_confidences(self, keypoints) -> list[float | None]:
+        """Extract keypoint confidences as a flat list if available.
+
+        Supports common shapes [K] or [1,K] or [N,K] -> first instance.
+        Returns list with floats or None. Empty if not available.
+        """
+        conf = getattr(keypoints, "conf", None)
+        if conf is None:
+            conf = getattr(keypoints, "confidence", None)
+        if conf is None:
+            return []
+
+        vals: list[float | None] = []
+        try:
+            # Try [K]
+            for c in conf:
+                if hasattr(c, "__len__"):
+                    vals = []
+                    raise Exception
+                try:
+                    vals.append(float(c))
+                except Exception:
+                    try:
+                        vals.append(float(c.item()))
+                    except Exception:
+                        vals.append(None)
+            if vals:
+                return vals
+        except Exception:
+            pass
+
+        try:
+            # Try [1, K] (or [N,K] -> first)
+            inner = conf[0]
+            for c in inner:
+                try:
+                    vals.append(float(c))
+                except Exception:
+                    try:
+                        vals.append(float(c.item()))
+                    except Exception:
+                        vals.append(None)
+            return vals
         except Exception:
             return []
