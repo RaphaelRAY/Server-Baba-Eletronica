@@ -58,7 +58,12 @@ camera = CameraHandler(
 processor = VideoProcessor(camera)
 token_registry = TokenRegistry()
 fcm_key = os.getenv("FCM_KEY", "")
-notifier = IdentifiedNotifier(fcm_key, cooldown=60)
+notifier_cooldown_env = os.getenv("NOTIFIER_COOLDOWN_SECS")
+try:
+    notifier_cooldown = int(notifier_cooldown_env) if notifier_cooldown_env else 60
+except Exception:
+    notifier_cooldown = 60
+notifier = IdentifiedNotifier(fcm_key, cooldown=notifier_cooldown)
 db_url = os.getenv("DB_URL")
 if db_url:
     database = Database(server=Database.SERVER_MYSQL, url=db_url)

@@ -7,6 +7,7 @@ import os
 import base64
 import logging
 logger = logging.getLogger(__name__)
+import time
 try:
     from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
     from sqlalchemy.ext.declarative import declarative_base
@@ -68,6 +69,23 @@ class Database:
         else:
             raise ValueError("Invalid server option")
 
+        # Cooldown for repeated events by type (in seconds)
+        try:
+            self._cooldown_default = float(os.getenv("EVENT_COOLDOWN_SECS", "0") or 0)
+        except Exception:
+            self._cooldown_default = 0.0
+        # Load per-type overrides from env: EVENT_COOLDOWN_<TYPE>
+        self._cooldown_by_type: Dict[str, float] = {}
+        for key, val in os.environ.items():
+            if key.startswith("EVENT_COOLDOWN_") and key != "EVENT_COOLDOWN_SECS":
+                typ = key[len("EVENT_COOLDOWN_"):].lower()
+                try:
+                    self._cooldown_by_type[typ] = float(val)
+                except Exception:
+                    continue
+        # Track last saved timestamps by type
+        self._last_saved_ts: Dict[str, float] = {}
+
     def save_event(self, data: dict) -> None:
         """Save a new event and optionally store an image.
 
@@ -77,6 +95,22 @@ class Database:
         - level: str – optional level label
         - image_bytes: bytes – optional JPEG (or raw) bytes to persist
         """
+
+        # Global de-duplication by type with cooldown BEFORE any I/O
+        typ = (data.get("type") or "").lower() or "unknown"
+        now = time.time()
+        cooldown = self._cooldown_by_type.get(typ, self._cooldown_default)
+        last_ts = self._last_saved_ts.get(typ)
+        if cooldown and last_ts is not None and (now - last_ts) < cooldown:
+            try:
+                logger.info(
+                    "Evento suprimido por cooldown: type=%s restante=%.1fs",
+                    typ,
+                    cooldown - (now - last_ts),
+                )
+            except Exception:
+                pass
+            return
 
         # Prepare optional image save
         image_path: str | None = None
@@ -102,6 +136,7 @@ class Database:
                 "image_b64": img_b64,
             }
             self._events.append(event)
+            self._last_saved_ts[typ] = now
             try:
                 logger.info(
                     "Evento salvo (memory): type=%s level=%s conf=%s image=%s",
@@ -123,6 +158,7 @@ class Database:
                 )
                 session.add(event)
                 session.commit()
+                self._last_saved_ts[typ] = now
                 try:
                     logger.info(
                         "Evento salvo (sql): id=%s type=%s level=%s conf=%s image=%s",
