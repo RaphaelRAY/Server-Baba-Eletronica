@@ -313,14 +313,27 @@ def get_all_events():
     return database.get_all_events()
 
 
-@app.get("/api/events/{offset}")
-def get_events(offset: int = Path(..., ge=0), limit: int = Query(30, gt=0)):
-    """Retorna eventos recentes sem campos de imagem (paginado)."""
-    events = database.get_recent_events(offset=offset, limit=limit)
-    # Strip image fields to keep payload light
+@app.get("/api/events/noimg")
+def get_all_events_noimg():
+    """Retorna todos os eventos sem campos de imagem (mais recentes primeiro)."""
+    events = database.get_all_events()
     def _strip(ev: dict) -> dict:
         return {k: v for k, v in ev.items() if k not in ("image_path", "image_b64", "image_bytes")}
+    return [_strip(e) for e in events]
 
+
+@app.get("/api/events/{offset}")
+def get_events(offset: int = Path(..., ge=0), limit: int = Query(30, gt=0)):
+    """Retorna eventos recentes com campos de imagem (paginado)."""
+    return database.get_recent_events(offset=offset, limit=limit)
+
+
+@app.get("/api/events/{offset}/noimg")
+def get_events_noimg(offset: int = Path(..., ge=0), limit: int = Query(30, gt=0)):
+    """Retorna eventos recentes sem campos de imagem (paginado)."""
+    events = database.get_recent_events(offset=offset, limit=limit)
+    def _strip(ev: dict) -> dict:
+        return {k: v for k, v in ev.items() if k not in ("image_path", "image_b64", "image_bytes")}
     return [_strip(e) for e in events]
 
 

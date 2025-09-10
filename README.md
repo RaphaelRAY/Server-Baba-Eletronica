@@ -43,8 +43,10 @@ Por padrão o servidor sobe em `http://localhost:8000`.
 - GET `/api/pose-snapshot`: snapshot JPEG com overlay de pose (503/500 on error).
 - GET `/api/stream`: stream MJPEG contínuo com overlay de latência.
 - POST `/api/register-token` {"token": "..."}: registra token FCM.
-- GET `/api/events`: lista todos os eventos (mais recentes primeiro).
-- GET `/api/events/{offset}` (query `limit`): eventos paginados sem imagem embutida.
+- GET `/api/events`: todos os eventos (com imagem quando disponível, mais recentes primeiro).
+- GET `/api/events/noimg`: todos os eventos sem campos de imagem.
+- GET `/api/events/{offset}` (query `limit`): eventos paginados com imagem embutida.
+- GET `/api/events/{offset}/noimg` (query `limit`): eventos paginados sem imagem embutida.
 - GET `/api/latency`: estatísticas de latência (ms) do capture.
 
 ## Eventos e imagens
