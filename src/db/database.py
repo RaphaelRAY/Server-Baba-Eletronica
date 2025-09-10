@@ -1,4 +1,4 @@
-"""Database module with variable and MySQL backends."""
+"""Database module with in-memory, SQLAlchemy and MongoDB backends."""
 
 import datetime
 from typing import List, Dict, Optional
@@ -22,6 +22,16 @@ except Exception:  # pragma: no cover - optional dependency
         return _Base
     sessionmaker = None  # type: ignore
     SQLALCHEMY_AVAILABLE = False
+
+try:  # optional dependency for MongoDB backend
+    import pymongo
+    from pymongo import MongoClient
+    from pymongo.collection import Collection
+    PYMONGO_AVAILABLE = True
+except Exception:  # pragma: no cover - optional dependency
+    MongoClient = None  # type: ignore
+    Collection = None  # type: ignore
+    PYMONGO_AVAILABLE = False
 
 Base = declarative_base()
 
@@ -52,6 +62,7 @@ class Database:
 
     SERVER_MEMORY = 0
     SERVER_MYSQL = 1
+    SERVER_MONGO = 2
 
     def __init__(self, server: int = SERVER_MEMORY, url: Optional[str] = None):
         """Initialize the database backend."""
@@ -66,6 +77,27 @@ class Database:
             self.engine = create_engine(url)
             Base.metadata.create_all(self.engine)
             self.Session = sessionmaker(bind=self.engine)
+        elif server == self.SERVER_MONGO:
+            if not PYMONGO_AVAILABLE:
+                raise ImportError("pymongo is required for MongoDB storage")
+            if url is None:
+                raise ValueError("URL required for MongoDB server")
+            self._mongo_client = MongoClient(url)
+            # Determine database from URL, env or default
+            try:
+                db = self._mongo_client.get_default_database()
+            except Exception:
+                db = None
+            if db is None:
+                db_name = os.getenv("MONGO_DB", "baby_monitor")
+                db = self._mongo_client[db_name]
+            self._mongo_db = db
+            col_name = os.getenv("MONGO_COLLECTION", "events")
+            self._mongo_col: Collection = db[col_name]
+            try:
+                self._mongo_col.create_index([("timestamp", pymongo.DESCENDING)])
+            except Exception:
+                pass
         else:
             raise ValueError("Invalid server option")
 
@@ -147,7 +179,7 @@ class Database:
                 )
             except Exception:
                 pass
-        else:
+        elif self.server == self.SERVER_MYSQL:
             session = self.Session()
             try:
                 event = Event(
@@ -172,6 +204,33 @@ class Database:
                     pass
             finally:
                 session.close()
+        elif self.server == self.SERVER_MONGO:
+            try:
+                doc = {
+                    "type": data.get("type"),
+                    "confidence": data.get("confidence"),
+                    "level": data.get("level", "info"),
+                    "timestamp": datetime.datetime.utcnow(),
+                    "image_path": image_path,
+                }
+                result = self._mongo_col.insert_one(doc)
+                self._last_saved_ts[typ] = now
+                try:
+                    logger.info(
+                        "Evento salvo (mongo): id=%s type=%s level=%s conf=%s image=%s",
+                        str(getattr(result, "inserted_id", None)),
+                        doc.get("type"),
+                        doc.get("level"),
+                        doc.get("confidence"),
+                        "yes" if image_path else "no",
+                    )
+                except Exception:
+                    pass
+            except Exception as e:  # pragma: no cover - I/O path
+                logger.error("Erro ao salvar evento no MongoDB: %s", e)
+        else:
+            # Should not happen
+            raise RuntimeError("Invalid database server configuration")
 
     def get_recent_events(self, offset: int = 0, limit: int = 50):
         """Return recent events with optional offset and limit."""
@@ -180,16 +239,27 @@ class Database:
             events = list(reversed(self._events))
             return events[offset : offset + limit]
 
-        session = self.Session()
-        events = (
-            session.query(Event)
-            .order_by(Event.timestamp.desc())
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
-        session.close()
-        return [self._event_to_dict(e) for e in events]
+        if self.server == self.SERVER_MYSQL:
+            session = self.Session()
+            events = (
+                session.query(Event)
+                .order_by(Event.timestamp.desc())
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
+            session.close()
+            return [self._event_to_dict(e) for e in events]
+        elif self.server == self.SERVER_MONGO:
+            cursor = (
+                self._mongo_col.find()
+                .sort("timestamp", -1)
+                .skip(int(offset))
+                .limit(int(limit))
+            )
+            return [self._mongo_doc_to_dict(d) for d in cursor]
+        else:
+            raise RuntimeError("Invalid database server configuration")
 
     def get_all_events(self):
         """Return all events ordered by newest first."""
@@ -197,10 +267,16 @@ class Database:
         if self.server == self.SERVER_MEMORY:
             return list(reversed(self._events))
 
-        session = self.Session()
-        events = session.query(Event).order_by(Event.timestamp.desc()).all()
-        session.close()
-        return [self._event_to_dict(e) for e in events]
+        if self.server == self.SERVER_MYSQL:
+            session = self.Session()
+            events = session.query(Event).order_by(Event.timestamp.desc()).all()
+            session.close()
+            return [self._event_to_dict(e) for e in events]
+        elif self.server == self.SERVER_MONGO:
+            cursor = self._mongo_col.find().sort("timestamp", -1)
+            return [self._mongo_doc_to_dict(d) for d in cursor]
+        else:
+            raise RuntimeError("Invalid database server configuration")
 
     def _event_to_dict(self, e: Event) -> dict:
         """Serialize SQL event row to dict including base64 if available."""
@@ -236,3 +312,24 @@ class Database:
         with open(path, "wb") as f:
             f.write(content)
         return path
+
+    def _mongo_doc_to_dict(self, d: dict) -> dict:
+        """Serialize MongoDB document to public dict including base64 if available."""
+        out = {
+            "type": d.get("type"),
+            "confidence": d.get("confidence"),
+            "timestamp": (
+                d.get("timestamp").isoformat() if d.get("timestamp") else None
+            ),
+        }
+        if d.get("level") is not None:
+            out["level"] = d.get("level")
+        img_path = d.get("image_path")
+        if img_path:
+            out["image_path"] = img_path
+            try:
+                with open(img_path, "rb") as fh:
+                    out["image_b64"] = base64.b64encode(fh.read()).decode("ascii")
+            except Exception:
+                pass
+        return out

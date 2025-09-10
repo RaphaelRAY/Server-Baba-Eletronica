@@ -23,6 +23,12 @@ Copie `.env.example` para `.env` e ajuste conforme a fonte de vídeo e integraç
 - Notificações (FCM): `FCM_KEY` e `NOTIFIER_COOLDOWN_SECS=60`
 - Deduplicação de eventos: `EVENT_COOLDOWN_SECS=60` e overrides por tipo `EVENT_COOLDOWN_face_down=60`
 - Diretório de imagens de eventos: `EVENTS_DIR=data/events`
+- Banco de dados:
+  - Memória (padrão): sem configuração
+  - SQL (SQLite/MySQL/Postgres via SQLAlchemy): `DB_URL=sqlite:///./events.db` ou `DB_URL=mysql+pymysql://user:pass@host:3306/db`
+  - MongoDB (via PyMongo): `DB_URL=mongodb://localhost:27017/baby_monitor`
+    - Se o DB não estiver no URL: `MONGO_DB=baby_monitor`
+    - Coleção (opcional): `MONGO_COLLECTION=events`
 - CORS (frontend): `CORS_ORIGINS=http://localhost:3000`
 - Log: `LOG_LEVEL=INFO`
 

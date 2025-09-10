@@ -64,9 +64,14 @@ try:
 except Exception:
     notifier_cooldown = 60
 notifier = IdentifiedNotifier(fcm_key, cooldown=notifier_cooldown)
-db_url = os.getenv("DB_URL")
+db_url = os.getenv("DB_URL") or os.getenv("DATABASE_URL")
 if db_url:
-    database = Database(server=Database.SERVER_MYSQL, url=db_url)
+    # Choose backend by URL scheme
+    url_lower = db_url.lower()
+    if url_lower.startswith("mongodb://") or url_lower.startswith("mongodb+srv://"):
+        database = Database(server=Database.SERVER_MONGO, url=db_url)
+    else:
+        database = Database(server=Database.SERVER_MYSQL, url=db_url)
 else:
     database = Database(server=Database.SERVER_MEMORY)
 # Configurable debounce for camera disconnection (in seconds)
