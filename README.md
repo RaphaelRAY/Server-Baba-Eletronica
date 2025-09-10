@@ -1,37 +1,60 @@
-# Baba Eletronica Server
+# Baba Eletrônica Server
 
-Este projeto implementa um backend simples para monitoramento de bebês.
-As cameras sao acessadas via ONVIF e os frames podem ser transmitidos
-em formato MJPEG via HTTP.
+Backend em FastAPI para monitoramento de bebês com captura de vídeo (ONVIF/RTSP/arquivo/dispositivo), análise com YOLO e notificação via FCM.
+
+## Preparação
+
+- Requisitos: Python 3.10+ (recomendado), FFmpeg disponível no sistema para RTSP.
+- Crie e ative um ambiente virtual e instale dependências:
+  - `python -m venv .venv`
+  - `source .venv/bin/activate` (Linux/macOS) ou `.venv\Scripts\activate` (Windows)
+  - `pip install -r requirements.txt`
+
+## Configuração (.env)
+
+Copie `.env.example` para `.env` e ajuste conforme a fonte de vídeo e integrações:
+
+- Fonte de vídeo (`VIDEO_SOURCE=onvif|rtsp|file|device`)
+  - ONVIF: `CAM_HOST`, `CAM_PORT`, `CAM_USER`, `CAM_PASS`
+  - RTSP: `RTSP_URL=rtsp://user:pass@ip:554/stream`
+  - Arquivo: `VIDEO_PATH=/caminho/video.mp4` e opcional `SYNC_FILE_FPS=true`, `FILE_FPS=30`
+  - Dispositivo: `DEVICE_INDEX=0`
+- Stream MJPEG: `STREAM_FPS=15` (opcional, usa FPS do arquivo se não definido)
+- Notificações (FCM): `FCM_KEY` e `NOTIFIER_COOLDOWN_SECS=60`
+- Deduplicação de eventos: `EVENT_COOLDOWN_SECS=60` e overrides por tipo `EVENT_COOLDOWN_face_down=60`
+- Diretório de imagens de eventos: `EVENTS_DIR=data/events`
+- CORS (frontend): `CORS_ORIGINS=http://localhost:3000`
+- Log: `LOG_LEVEL=INFO`
 
 ## Executar
 
-Para iniciar o servidor e acessar a câmera, rode:
+Inicie o servidor:
 
 ```bash
-python -m src.main
+python src/main.py
 ```
 
-O snapshot pode ser obtido em `/api/snapshot` e o streaming em `/api/stream`.
+Por padrão o servidor sobe em `http://localhost:8000`.
 
-A aplicação usa eventos de lifespan do FastAPI para ligar e desligar a câmera
-automaticamente.
+## Endpoints
 
-## Eventos com imagem
+- GET `/api/status`: estado da câmera (200 conectado, 503 desconectado).
+- GET `/api/snapshot`: snapshot JPEG do frame processado (503 se indisponível).
+- GET `/api/pose-snapshot`: snapshot JPEG com overlay de pose (503/500 on error).
+- GET `/api/stream`: stream MJPEG contínuo com overlay de latência.
+- POST `/api/register-token` {"token": "..."}: registra token FCM.
+- GET `/api/events`: lista todos os eventos (mais recentes primeiro).
+- GET `/api/events/{offset}` (query `limit`): eventos paginados sem imagem embutida.
+- GET `/api/latency`: estatísticas de latência (ms) do capture.
 
-- Ao detectar eventos (ex.: ausência, câmera desconectada, bebê de bruços), o servidor salva um snapshot JPEG no diretório configurado por `EVENTS_DIR` (padrão: `data/events`).
-- As rotas `/api/events` e `/api/events/{offset}` retornam, além de `type`, `confidence` e `timestamp`, os campos opcionais `image_path` e `image_b64` (base64 do snapshot) quando disponíveis.
+## Eventos e imagens
 
-Para configurar o diretório de snapshots, adicione ao `.env`:
+- Em eventos (ausência, câmera desconectada/conectada, bebê de bruços/suspeito), um snapshot pode ser salvo em `EVENTS_DIR`.
+- As rotas de eventos retornam também `image_path` e, quando aplicável, `image_b64`.
 
-```
-EVENTS_DIR=data/events
-```
+## Testes
 
-## Testes dos Componentes
-
-Foi adicionada a pasta `tests` com casos de teste para validar partes
-isoladas do sistema. Para executar os testes utilize:
+Execute a suíte de testes:
 
 ```bash
 python -m unittest discover tests
