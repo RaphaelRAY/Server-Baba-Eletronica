@@ -2,6 +2,9 @@ import os
 import time
 import cv2
 import logging
+import json
+import asyncio
+from typing import List
 from threading import Thread, Event
 
 from fastapi import FastAPI, HTTPException, Response, Query, Path
@@ -93,7 +96,7 @@ position_monitor = PositionMonitor(
     database,
     face_conf_min=pose_face_conf,
     no_face_frames_threshold=pose_no_face_frames,
-)
+    )
 
 # Tolerate missing Firebase setup so app keeps running
 try:
@@ -113,6 +116,53 @@ def _get_env_bool(name: str, default: bool) -> bool:
 
 # Mostrar poses em janela (configurável via env: SHOW_POSE_WINDOW)
 SHOW_POSE_WINDOW = _get_env_bool("SHOW_POSE_WINDOW", True)
+
+# Windows: use Selector event loop to avoid noisy Proactor errors on disconnects
+if os.name == "nt":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
+
+# Simple SSE broker to fan-out new events to connected clients
+class SseBroker:
+    """Broadcasts events to subscribers via per-client asyncio queues."""
+
+    def __init__(self) -> None:
+        self._subscribers: List[asyncio.Queue] = []
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
+        self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        try:
+            self._subscribers.remove(q)
+        except ValueError:
+            pass
+
+    def publish(self, event: dict) -> None:
+        # Schedule puts on the app loop from any thread
+        if not self._subscribers:
+            return
+        if self._loop is None:
+            return
+        payload = json.dumps(event, separators=(",", ":"), default=str)
+        for q in list(self._subscribers):
+            try:
+                self._loop.call_soon_threadsafe(q.put_nowait, payload)
+            except Exception:
+                # Drop silently if queue is full or loop closed
+                pass
+
+
+# Global broker instance
+sse_broker = SseBroker()
 
 # Eventos para controle de threads de processamento
 t_processing_stop = Event()
@@ -167,6 +217,12 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.info(f"Iniciando câmera ({video_source}) e loop de análise")
+    # Bind loop to SSE broker and hook DB sink
+    try:
+        sse_broker.set_loop(asyncio.get_running_loop())
+        database.set_event_sink(lambda ev: sse_broker.publish(ev))
+    except Exception:
+        pass
     # 1) Inicia captura de vídeo
     camera.start()
     # 2) Reseta evento e inicia thread de processamento
@@ -303,10 +359,44 @@ def stream():
         except GeneratorExit:
             # Client disconnected or server shutting down; exit quietly
             return
+        except (BrokenPipeError, ConnectionResetError):
+            # Client disconnected abruptly
+            return
 
     return StreamingResponse(
         mjpeg_generator(), media_type="multipart/x-mixed-replace; boundary=frame"
     )
+
+
+@app.get("/api/events/sse")
+async def events_sse():
+    """Server-Sent Events stream of newly saved events (no images)."""
+
+    async def event_stream():
+        q = sse_broker.subscribe()
+        keepalive = 15.0
+        try:
+            while not t_processing_stop.is_set():
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=keepalive)
+                    # Proper SSE framing: data: <json>\n\n
+                    yield f"data: {data}\n\n"
+                except asyncio.TimeoutError:
+                    # Send a comment to keep the connection alive
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            # Client disconnected
+            return
+        finally:
+            sse_broker.unsubscribe(q)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        # Disable proxy buffering if any (useful for nginx)
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
 
 
 @app.post("/api/register-token")
