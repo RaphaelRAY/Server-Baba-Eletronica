@@ -104,8 +104,15 @@ except Exception as e:
         "Firebase not initialized; continuing without push notifications: %s", e
     )
 
-# Mostrar poses em janela (alterar para True se desejar)
-SHOW_POSE_WINDOW = True
+def _get_env_bool(name: str, default: bool) -> bool:
+    """Return boolean from env var names like 1/true/yes/on."""
+    val = os.getenv(name)
+    if val is None or val == "":
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on", "y")
+
+# Mostrar poses em janela (configurável via env: SHOW_POSE_WINDOW)
+SHOW_POSE_WINDOW = _get_env_bool("SHOW_POSE_WINDOW", True)
 
 # Eventos para controle de threads de processamento
 t_processing_stop = Event()
