@@ -320,7 +320,7 @@ def get_pose_snapshot():
 
 @app.get("/api/stream")
 def stream():
-    """MJPEG stream com overlay de latência."""
+    """MJPEG stream contínuo sem overlay de texto."""
 
     # Verifica disponibilidade de frame antes de iniciar o stream
     # Se não houver frame, retorna erro em vez de manter conexão aberta.
@@ -354,16 +354,6 @@ def stream():
                 if frame is None:
                     time.sleep(0.1)
                     continue
-                lat = camera.get_last_latency() or 0.0
-                cv2.putText(
-                    frame,
-                    f"Lat: {lat*1000:.1f} ms",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 0),
-                    2,
-                )
                 _, jpg = cv2.imencode(".jpg", frame)
                 yield (
                     b"--frame\r\n"

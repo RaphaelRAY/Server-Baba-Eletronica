@@ -47,7 +47,7 @@ Por padrão o servidor sobe em `http://localhost:8000`.
 - GET `/api/status`: estado da câmera (200 conectado, 503 desconectado).
 - GET `/api/snapshot`: snapshot JPEG do frame processado (503 se indisponível).
 - GET `/api/pose-snapshot`: snapshot JPEG com overlay de pose (503/500 on error).
-- GET `/api/stream`: stream MJPEG contínuo com overlay de latência.
+- GET `/api/stream`: stream MJPEG contínuo.
 - POST `/api/register-token` {"token": "..."}: registra token FCM.
 - GET `/api/events`: todos os eventos (com imagem quando disponível, mais recentes primeiro).
 - GET `/api/events/noimg`: todos os eventos sem campos de imagem.
