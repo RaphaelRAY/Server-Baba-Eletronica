@@ -131,6 +131,7 @@ class SseBroker:
     def __init__(self) -> None:
         self._subscribers: List[asyncio.Queue] = []
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._closed: bool = False
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -148,7 +149,7 @@ class SseBroker:
 
     def publish(self, event: dict) -> None:
         # Schedule puts on the app loop from any thread
-        if not self._subscribers:
+        if not self._subscribers or self._closed:
             return
         if self._loop is None:
             return
@@ -158,6 +159,17 @@ class SseBroker:
                 self._loop.call_soon_threadsafe(q.put_nowait, payload)
             except Exception:
                 # Drop silently if queue is full or loop closed
+                pass
+
+    def close(self) -> None:
+        """Mark broker closed and wake all subscribers to allow fast shutdown."""
+        self._closed = True
+        if not self._loop:
+            return
+        for q in list(self._subscribers):
+            try:
+                self._loop.call_soon_threadsafe(q.put_nowait, "__shutdown__")
+            except Exception:
                 pass
 
 
@@ -237,6 +249,10 @@ async def lifespan(app: FastAPI):
     # No shutdown, sinaliza e aguarda thread terminar
     logging.info("Parando loop de análise")
     t_processing_stop.set()
+    try:
+        sse_broker.close()
+    except Exception:
+        pass
     t_processing_thread.join(timeout=1)
     camera.stop()
     if SHOW_POSE_WINDOW:
@@ -374,11 +390,13 @@ async def events_sse():
 
     async def event_stream():
         q = sse_broker.subscribe()
-        keepalive = 15.0
+        keepalive = 1.0
         try:
             while not t_processing_stop.is_set():
                 try:
                     data = await asyncio.wait_for(q.get(), timeout=keepalive)
+                    if data == "__shutdown__":
+                        break
                     # Proper SSE framing: data: <json>\n\n
                     yield f"data: {data}\n\n"
                 except asyncio.TimeoutError:
