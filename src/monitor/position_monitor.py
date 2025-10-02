@@ -42,14 +42,31 @@ class PositionMonitor:
         self.face_down_suspected_sent = False
         self._no_face_count = 0
         self._last_frame = None
+        self._pose_window_initialized = False
+        self._pose_window_name = "Pose"
 
     def analyze_frame(self, frame, show: bool = False) -> None:
         """Run pose model and optionally display keypoints."""
         # Cache frame for potential snapshot on event
         self._last_frame = frame
         results = self.model(frame)
-        if show and results:
-            cv2.imshow("Pose", results[0].plot())
+        if show:
+            if not self._pose_window_initialized:
+                try:
+                    cv2.namedWindow(
+                        self._pose_window_name,
+                        cv2.WINDOW_NORMAL | getattr(cv2, "WINDOW_GUI_EXPANDED", 0),
+                    )
+                except Exception:
+                    cv2.namedWindow(self._pose_window_name, cv2.WINDOW_NORMAL)
+                self._pose_window_initialized = True
+            try:
+                render = results[0].plot() if results else frame
+            except Exception:
+                render = frame
+            if render is None:
+                render = frame
+            cv2.imshow(self._pose_window_name, render)
             cv2.waitKey(1)
         self.handle_pose(results)
         #print(results[0].keypoints)  # Debug: show raw keypoints data
