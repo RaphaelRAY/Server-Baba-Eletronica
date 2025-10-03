@@ -588,7 +588,7 @@ class CameraHandler:
 
 
 
-    def control_ptz(self, err_x: float, err_y: float, kp: float = 1.2) -> None:
+    def control_ptz(self, err_x: float, err_y: float, kp: float = 0.6) -> None:
         if not self.ptz_enabled or self._camera is None:
             return
         if not self._ptz_profile_token or not self._ptz_service:
@@ -643,6 +643,7 @@ class CameraHandler:
 
             try:
                 self._ptz_service.ContinuousMove(payload)
+                print(payload)
                 if move_duration > 0:
                     self._sleep_interruptible(move_duration)
                 self._ptz_service.Stop({"ProfileToken": self._ptz_profile_token})
