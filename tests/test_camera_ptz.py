@@ -52,6 +52,9 @@ class CameraHandlerPTZTest(TestCase):
         self.handler = CameraHandler("host", 80, "user", "pass")
         self.handler.ptz_enabled = True
 
+    def tearDown(self):
+        self.handler.stop()
+
     @patch("src.camera.handler.time.sleep", autospec=True)
     def test_control_ptz_limits_velocity_and_timeout(self, mock_sleep):
         ptz_service = _DummyPTZService()
@@ -71,13 +74,14 @@ class CameraHandlerPTZTest(TestCase):
         self.handler._ptz_timeout = 1.0
 
         self.handler.control_ptz(err_x=5.0, err_y=-5.0)
+        self.assertTrue(self.handler._wait_for_ptz_idle())
 
         self.assertEqual(len(ptz_service.moves), 1)
         move = ptz_service.moves[0]
         self.assertEqual(move["ProfileToken"], "Profile000")
-        self.assertEqual(move["Timeout"], "PT1S")
-        self.assertAlmostEqual(move["Velocity"]["PanTilt"]["x"], -1.0)
-        self.assertAlmostEqual(move["Velocity"]["PanTilt"]["y"], 1.0)
+        self.assertNotIn("Timeout", move)
+        self.assertAlmostEqual(move["Velocity"]["PanTilt"]["x"], 1.0)
+        self.assertAlmostEqual(move["Velocity"]["PanTilt"]["y"], -1.0)
         self.assertTrue(ptz_service.stop_payloads)
         self.assertEqual(
             ptz_service.stop_payloads[-1]["ProfileToken"], "Profile000"
@@ -95,6 +99,7 @@ class CameraHandlerPTZTest(TestCase):
         self.handler._ptz_profile_token = None
 
         self.handler.control_ptz(err_x=1.0, err_y=1.0)
+        self.assertTrue(self.handler._wait_for_ptz_idle())
 
         self.assertEqual(ptz_service.moves, [])
         self.assertEqual(ptz_service.stop_payloads, [])
