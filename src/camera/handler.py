@@ -716,9 +716,31 @@ class CameraHandler:
             if vx == 0.0 and vy == 0.0:
                 return
 
-            command = (vx, vy)
+            target_time = self._ptz_last_command_ts + self._ptz_command_interval
+            now = time.monotonic()
+            if target_time > now:
+                wait_time = target_time - now
+                if wait_time > 0:
+                    self._sleep_interruptible(wait_time)
+                    if self._stop.is_set():
+                        return
 
-        self._enqueue_ptz_command(*command)
+            payload = {
+                "ProfileToken": self._ptz_profile_token,
+                "Velocity": {"PanTilt": {"x": vx, "y": vy}},
+            }
+
+            move_duration = max(0.0, min(self._ptz_move_duration, self._ptz_timeout))
+
+            try:
+                self._ptz_service.ContinuousMove(payload)
+                if move_duration > 0:
+                    self._sleep_interruptible(move_duration)
+                self._ptz_service.Stop({"ProfileToken": self._ptz_profile_token})
+            except Exception as exc:
+                logging.warning("PTZ move/stop falhou: %s", exc)
+            finally:
+                self._ptz_last_command_ts = time.monotonic()
 
 
     def stop(self) -> None:

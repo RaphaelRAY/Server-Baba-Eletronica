@@ -37,7 +37,7 @@ class TestPTZControl(unittest.TestCase):
 
                 expected_duration = min(self.cam._ptz_move_duration, self.cam._ptz_timeout)
 
-                self.cam._perform_ptz_move(0.5, 0.0)
+                self.cam.control_ptz(0.5, 0.0)
 
                 self.assertEqual(self.cam._ptz_service.ContinuousMove.call_count, 2)
                 self.assertEqual(self.cam._ptz_service.Stop.call_count, 2)
