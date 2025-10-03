@@ -25,39 +25,42 @@ def main():
 
     profile_token = profile.token
 
+    x=1
+    s=1
     # Exemplo: movimento contínuo (pan=0.3 direita, tilt=0.0)
     print("[TEST] ContinuousMove direita por 2 segundos")
     req = {
         "ProfileToken": profile_token,
         "Velocity": {
-            "PanTilt": {"x": 0.3, "y": 0.0}
-        },
-        "Timeout": "PT1S"  # ISO8601 = 2 segundos
+            "PanTilt": {"x": x, "y": 0.0}
+        }
     }
+    print(req)
+    time.sleep(1)
     ptz.ContinuousMove(req)
     req = {
         "ProfileToken": profile_token,
         "Velocity": {
-            "PanTilt": {"x": -0.3, "y": 0.0}
-        },
-        "Timeout": "PT1S"  # ISO8601 = 2 segundos
+            "PanTilt": {"x": -x, "y": 0.0}
+        }
     }
+    time.sleep(1)
     ptz.ContinuousMove(req)
     req = {
         "ProfileToken": profile_token,
         "Velocity": {
-            "PanTilt": {"x": 0, "y": 3.0}
-        },
-        "Timeout": "PT1S"  # ISO8601 = 2 segundos
+            "PanTilt": {"x": 0, "y": x}
+        }
     }
+    time.sleep(1)
     ptz.ContinuousMove(req)
     req = {
         "ProfileToken": profile_token,
         "Velocity": {
-            "PanTilt": {"x": 0, "y": -3.0}
-        },
-        "Timeout": "PT1S"  # ISO8601 = 2 segundos
+            "PanTilt": {"x": 0, "y": -x}
+        }
     }
+    time.sleep(1)
     ptz.ContinuousMove(req)
 
     time.sleep(2.5)  # espera terminar

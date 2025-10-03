@@ -1,7 +1,9 @@
-import socket
-import os
 import logging
+import math
+import os
 import re
+import socket
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -12,7 +14,6 @@ import cv2
 from onvif import ONVIFCamera
 from threading import Thread, Event, Lock
 from collections import deque
-import time
 
 _DURATION_RE = re.compile(
     r"^P(?:(?P<days>\d+)D)?"
@@ -158,6 +159,10 @@ class CameraHandler:
         self._ptz_timeout: float = 1.0
         self._ptz_pan_limit: float | None = None
         self._ptz_tilt_limit: float | None = None
+        self._ptz_lock = Lock()
+        self._ptz_last_command_ts: float = float("-inf")
+        self._ptz_command_interval: float = 0.35
+        self._ptz_move_duration: float = 0.4
 
     def _sleep_interruptible(self, seconds: float, step: float = 0.1) -> None:
         """Sleep in small steps so stop() can interrupt long waits."""
@@ -551,52 +556,64 @@ class CameraHandler:
         """Retorna True se a thread e a captura estiverem ativas."""
         return bool(self._cap and self._cap.isOpened() and self._thread and self._thread.is_alive())
 
-    def control_ptz(self, err_x: float, err_y: float, kp: float = 0.6) -> None:
-        """Controla PTZ respeitando limites do dispositivo informado."""
+
+
+    def control_ptz(self, err_x: float, err_y: float, kp: float = 1.2) -> None:
         if not self.ptz_enabled or self._camera is None:
             return
-
-        # Garante que tokens/configurações estejam carregados
         if not self._ptz_profile_token or not self._ptz_service:
             self._refresh_ptz_state()
-
         if not self._ptz_service or not self._ptz_profile_token:
             return
 
-        vx = kp * err_x
-        vy = kp * err_y
+        with self._ptz_lock:
+            now = time.monotonic()
+            if now - self._ptz_last_command_ts < self._ptz_command_interval:
+                return
 
-        pan_limit = self._ptz_pan_limit if self._ptz_pan_limit is not None else 1.0
-        tilt_limit = self._ptz_tilt_limit if self._ptz_tilt_limit is not None else 1.0
+            # err_x/err_y já vêm em [-1, 1] do processing_loop
 
-        vx = max(min(vx, pan_limit), -pan_limit)
-        vy = max(min(vy, tilt_limit), -tilt_limit)
+            deadband = 0.02
+            if abs(err_x) < deadband:
+                err_x = 0.0
+            if abs(err_y) < deadband:
+                err_y = 0.0
 
-        if abs(vx) < 1e-3 and abs(vy) < 1e-3:
-            return
+            def shape(e: float) -> float:
+                return math.tanh(2.5 * e)
 
-        payload = {
-            "ProfileToken": self._ptz_profile_token,
-            "Velocity": {
-                "PanTilt": {
-                    "x": -vx,
-                    "y": -vy,
-                }
-            },
-            "Timeout": self._format_timeout(),
-        }
+            vx = kp * shape(err_x)
+            vy = kp * shape(err_y)
 
-        try:
-            self._ptz_service.ContinuousMove(payload)
-        except Exception as exc:
-            logging.warning("Falha ao enviar comando PTZ: %s", exc)
-            return
+            min_pan, min_tilt = 0.12, 0.12
+            if vx != 0.0:
+                vx = math.copysign(max(abs(vx), min_pan), vx)
+            if vy != 0.0:
+                vy = math.copysign(max(abs(vy), min_tilt), vy)
 
-        try:
-            time.sleep(min(0.2, self._ptz_timeout))
-            self._ptz_service.Stop({"ProfileToken": self._ptz_profile_token})
-        except Exception as exc:
-            logging.debug("Falha ao finalizar movimento PTZ: %s", exc)
+            pan_limit = self._ptz_pan_limit if self._ptz_pan_limit is not None else 1.0
+            tilt_limit = self._ptz_tilt_limit if self._ptz_tilt_limit is not None else 1.0
+            vx = max(min(vx, pan_limit), -pan_limit)
+            vy = max(min(vy, tilt_limit), -tilt_limit)
+
+            if vx == 0.0 and vy == 0.0:
+                return
+
+            payload = {
+                "ProfileToken": self._ptz_profile_token,
+                "Velocity": {"PanTilt": {"x": vx, "y": vy}},
+            }
+
+            move_duration = max(0.0, min(self._ptz_move_duration, self._ptz_timeout))
+
+            try:
+                self._ptz_service.ContinuousMove(payload)
+                if move_duration > 0:
+                    self._sleep_interruptible(move_duration)
+                self._ptz_service.Stop({"ProfileToken": self._ptz_profile_token})
+                self._ptz_last_command_ts = time.monotonic()
+            except Exception as exc:
+                logging.warning("PTZ move/stop falhou: %s", exc)
 
 
     def stop(self) -> None:
