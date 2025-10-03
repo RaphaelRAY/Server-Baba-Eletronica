@@ -597,10 +597,6 @@ class CameraHandler:
             return
 
         with self._ptz_lock:
-            now = time.monotonic()
-            if now - self._ptz_last_command_ts < self._ptz_command_interval:
-                return
-
             # err_x/err_y já vêm em [-1, 1] do processing_loop
 
             deadband = 0.02
@@ -629,6 +625,15 @@ class CameraHandler:
             if vx == 0.0 and vy == 0.0:
                 return
 
+            target_time = self._ptz_last_command_ts + self._ptz_command_interval
+            now = time.monotonic()
+            if target_time > now:
+                wait_time = target_time - now
+                if wait_time > 0:
+                    self._sleep_interruptible(wait_time)
+                    if self._stop.is_set():
+                        return
+
             payload = {
                 "ProfileToken": self._ptz_profile_token,
                 "Velocity": {"PanTilt": {"x": vx, "y": vy}},
@@ -641,9 +646,10 @@ class CameraHandler:
                 if move_duration > 0:
                     self._sleep_interruptible(move_duration)
                 self._ptz_service.Stop({"ProfileToken": self._ptz_profile_token})
-                self._ptz_last_command_ts = time.monotonic()
             except Exception as exc:
                 logging.warning("PTZ move/stop falhou: %s", exc)
+            finally:
+                self._ptz_last_command_ts = time.monotonic()
 
 
     def stop(self) -> None:
