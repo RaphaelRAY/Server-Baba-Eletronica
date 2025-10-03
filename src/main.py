@@ -6,6 +6,7 @@ import json
 import asyncio
 from typing import List
 from threading import Thread, Event
+from queue import Queue, Empty, Full
 
 from fastapi import FastAPI, HTTPException, Response, Query, Path
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -179,6 +180,10 @@ sse_broker = SseBroker()
 # Eventos para controle de threads de processamento
 t_processing_stop = Event()
 t_processing_thread = Thread(target=lambda: None)
+pose_queue: Queue = Queue(maxsize=2)
+detection_queue: Queue = Queue(maxsize=2)
+t_pose_thread = Thread(target=lambda: None)
+t_detection_thread = Thread(target=lambda: None)
 
 
 # Função de loop contínuo de processamento
@@ -194,33 +199,74 @@ def processing_loop():
             time.sleep(0.1)
             continue
 
-        # Analisa pose e opcionalmente exibe janela
-        position_monitor.analyze_frame(frame, show=SHOW_POSE_WINDOW)
-
-        results = processor.process_frame_data(frame)
-        if results is None:
-            results = []
-        presence_monitor.handle_detections(results)
-
-        height, width = frame.shape[:2]
-
-        for r in results:
-            for box in r.boxes:
-                x1, y1, x2, y2 = map(float, box.xyxy[0])
-                cx = (x1 + x2) / 2
-                cy = (y1 + y2) / 2
-
-                err_x = (cx - width / 2) / width
-                err_y = (cy - height / 2) / height
-
-                # Só move se estiver fora da zona morta e PTZ habilitado
-                if camera.ptz_enabled and (abs(err_x) > 0.1 or abs(err_y) > 0.1):
-                    camera.control_ptz(err_x, err_y)
-
-
-                break  # só a primeira detecção relevante
+        _enqueue_frame(pose_queue, frame)
+        _enqueue_frame(detection_queue, frame)
 
         time.sleep(0.01)  # pequena pausa para aliviar CPU
+
+
+def _enqueue_frame(queue_obj: Queue, frame):
+    """Enfileira cópia do frame, descartando o mais antigo se estiver cheio."""
+    try:
+        queue_obj.put(frame.copy(), timeout=0.05)
+    except Full:
+        try:
+            queue_obj.get_nowait()
+        except Empty:
+            pass
+        try:
+            queue_obj.put(frame.copy(), timeout=0.05)
+        except Full:
+            pass
+
+
+def pose_loop():
+    """Processa frames dedicados à análise de pose."""
+    while not t_processing_stop.is_set():
+        try:
+            frame = pose_queue.get(timeout=0.1)
+        except Empty:
+            continue
+
+        try:
+            position_monitor.analyze_frame(frame, show=SHOW_POSE_WINDOW)
+        except Exception as exc:
+            logging.exception("Erro na thread de pose: %s", exc)
+
+
+def detection_loop():
+    """Processa frames dedicados à detecção e controle PTZ."""
+    while not t_processing_stop.is_set():
+        try:
+            frame = detection_queue.get(timeout=0.1)
+        except Empty:
+            continue
+
+        try:
+            results = processor.process_frame_data(frame)
+            if results is None:
+                results = []
+            presence_monitor.handle_detections(results)
+
+            height, width = frame.shape[:2]
+
+            for r in results:
+                for box in r.boxes:
+                    x1, y1, x2, y2 = map(float, box.xyxy[0])
+                    cx = (x1 + x2) / 2
+                    cy = (y1 + y2) / 2
+
+                    err_x = (cx - width / 2) / width
+                    err_y = (cy - height / 2) / height
+
+                    # Só move se estiver fora da zona morta e PTZ habilitado
+                    if camera.ptz_enabled and (abs(err_x) > 0.1 or abs(err_y) > 0.1):
+                        camera.control_ptz(err_x, err_y)
+                        time.sleep(0.1)
+
+                    break  # só a primeira detecção relevante
+        except Exception as exc:
+            logging.exception("Erro na thread de detecção: %s", exc)
 
 
 # FastAPI com contexto de vida (lifespan)
@@ -240,10 +286,16 @@ async def lifespan(app: FastAPI):
     camera.start()
     # 2) Reseta evento e inicia thread de processamento
     t_processing_stop.clear()
-    global t_processing_thread
+    global pose_queue, detection_queue, t_processing_thread, t_pose_thread, t_detection_thread
+    pose_queue = Queue(maxsize=2)
+    detection_queue = Queue(maxsize=2)
     t_processing_thread = Thread(target=processing_loop, daemon=True)
+    t_pose_thread = Thread(target=pose_loop, daemon=True)
+    t_detection_thread = Thread(target=detection_loop, daemon=True)
     t_processing_thread.start()
-    
+    t_pose_thread.start()
+    t_detection_thread.start()
+
 
     yield  # aplica as rotas e mantém serviço vivo
 
@@ -255,6 +307,8 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     t_processing_thread.join(timeout=1)
+    t_pose_thread.join(timeout=1)
+    t_detection_thread.join(timeout=1)
     camera.stop()
     if SHOW_POSE_WINDOW:
         cv2.destroyAllWindows()

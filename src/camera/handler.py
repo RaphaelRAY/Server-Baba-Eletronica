@@ -588,7 +588,7 @@ class CameraHandler:
 
 
 
-    def control_ptz(self, err_x: float, err_y: float, kp: float = 0.6) -> None:
+    def control_ptz(self, err_x: float, err_y: float, kp: float = 0.4) -> None:
         if not self.ptz_enabled or self._camera is None:
             return
         if not self._ptz_profile_token or not self._ptz_service:
@@ -636,7 +636,7 @@ class CameraHandler:
 
             payload = {
                 "ProfileToken": self._ptz_profile_token,
-                "Velocity": {"PanTilt": {"x": vx, "y": vy}},
+                "Velocity": {"PanTilt": {"x": vx, "y": -vy}},
             }
 
             move_duration = max(0.0, min(self._ptz_move_duration, self._ptz_timeout))
