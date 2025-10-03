@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
@@ -45,6 +46,15 @@ class TestPTZControl(unittest.TestCase):
         with patch('src.camera.handler.time.monotonic', return_value=10.0):
             self.cam.control_ptz(0.01, 0.01)
         self.cam._ptz_service.ContinuousMove.assert_not_called()
+
+    def test_ptz_timing_from_env(self):
+        with patch.dict(os.environ, {
+            'PTZ_COMMAND_INTERVAL_SECS': '1.2',
+            'PTZ_MOVE_DURATION_SECS': '2.5',
+        }):
+            cam = CameraHandler('host', 80, 'user', 'pass')
+        self.assertAlmostEqual(cam._ptz_command_interval, 1.2)
+        self.assertAlmostEqual(cam._ptz_move_duration, 2.5)
 
 
 if __name__ == '__main__':

@@ -21,6 +21,32 @@ _DURATION_RE = re.compile(
 )
 
 
+def _env_float(
+    name: str,
+    default: float,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float:
+    """Obtém float positivo do ambiente com limites opcionais."""
+
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except Exception:
+        logging.warning("Valor inválido para %s: %r", name, raw)
+        return default
+    if min_value is not None and value < min_value:
+        value = min_value
+    if max_value is not None and value > max_value:
+        value = max_value
+    if value <= 0:
+        return default
+    return value
+
+
 def _as_iterable(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -161,8 +187,12 @@ class CameraHandler:
         self._ptz_tilt_limit: float | None = None
         self._ptz_lock = Lock()
         self._ptz_last_command_ts: float = float("-inf")
-        self._ptz_command_interval: float = 0.35
-        self._ptz_move_duration: float = 0.4
+        self._ptz_command_interval: float = _env_float(
+            "PTZ_COMMAND_INTERVAL_SECS", 0.35, min_value=0.05
+        )
+        self._ptz_move_duration: float = _env_float(
+            "PTZ_MOVE_DURATION_SECS", 0.4, min_value=0.05
+        )
 
     def _sleep_interruptible(self, seconds: float, step: float = 0.1) -> None:
         """Sleep in small steps so stop() can interrupt long waits."""
