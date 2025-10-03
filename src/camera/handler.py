@@ -5,6 +5,7 @@ import re
 import socket
 import time
 from datetime import timedelta
+from queue import Empty, PriorityQueue
 from typing import Any
 
 # Suprime logs do OpenCV/FFmpeg
@@ -193,6 +194,10 @@ class CameraHandler:
         self._ptz_move_duration: float = _env_float(
             "PTZ_MOVE_DURATION_SECS", 0.4, min_value=0.05
         )
+        self._ptz_command_queue: PriorityQueue[tuple[float, dict[str, Any], float]] = (
+            PriorityQueue()
+        )
+        self._ptz_worker: Thread | None = None
 
     def _sleep_interruptible(self, seconds: float, step: float = 0.1) -> None:
         """Sleep in small steps so stop() can interrupt long waits."""
@@ -588,6 +593,59 @@ class CameraHandler:
 
 
 
+    def _ensure_ptz_worker(self) -> None:
+        """Garantir que exista uma thread dedicada para executar comandos PTZ."""
+
+        if self._ptz_worker and self._ptz_worker.is_alive():
+            return
+
+        def _worker() -> None:
+            while not self._stop.is_set():
+                try:
+                    execute_at, payload, duration = self._ptz_command_queue.get(
+                        timeout=0.1
+                    )
+                except Empty:
+                    continue
+
+                if payload is None:
+                    self._ptz_command_queue.task_done()
+                    continue
+
+                wait_time = execute_at - time.monotonic()
+                if wait_time > 0:
+                    self._sleep_interruptible(wait_time)
+                    if self._stop.is_set():
+                        continue
+
+                try:
+                    if not self._ptz_service or not self._ptz_profile_token:
+                        continue
+                    self._ptz_service.ContinuousMove(payload)
+                    if duration > 0:
+                        self._sleep_interruptible(duration)
+                        if self._stop.is_set():
+                            continue
+                    self._ptz_service.Stop({"ProfileToken": self._ptz_profile_token})
+                except Exception as exc:
+                    logging.warning("PTZ move/stop falhou: %s", exc)
+                finally:
+                    self._ptz_last_command_ts = max(
+                        self._ptz_last_command_ts, time.monotonic()
+                    )
+                    self._ptz_command_queue.task_done()
+
+        self._ptz_worker = Thread(target=_worker, daemon=True)
+        self._ptz_worker.start()
+
+    def _enqueue_ptz_command(
+        self, execute_at: float, payload: dict[str, Any], move_duration: float
+    ) -> None:
+        if self._stop.is_set():
+            return
+        self._ensure_ptz_worker()
+        self._ptz_command_queue.put((execute_at, payload, move_duration))
+
     def control_ptz(self, err_x: float, err_y: float, kp: float = 1.2) -> None:
         if not self.ptz_enabled or self._camera is None:
             return
@@ -625,14 +683,10 @@ class CameraHandler:
             if vx == 0.0 and vy == 0.0:
                 return
 
-            target_time = self._ptz_last_command_ts + self._ptz_command_interval
             now = time.monotonic()
-            if target_time > now:
-                wait_time = target_time - now
-                if wait_time > 0:
-                    self._sleep_interruptible(wait_time)
-                    if self._stop.is_set():
-                        return
+            execute_at = max(
+                now, self._ptz_last_command_ts + self._ptz_command_interval
+            )
 
             payload = {
                 "ProfileToken": self._ptz_profile_token,
@@ -641,15 +695,8 @@ class CameraHandler:
 
             move_duration = max(0.0, min(self._ptz_move_duration, self._ptz_timeout))
 
-            try:
-                self._ptz_service.ContinuousMove(payload)
-                if move_duration > 0:
-                    self._sleep_interruptible(move_duration)
-                self._ptz_service.Stop({"ProfileToken": self._ptz_profile_token})
-            except Exception as exc:
-                logging.warning("PTZ move/stop falhou: %s", exc)
-            finally:
-                self._ptz_last_command_ts = time.monotonic()
+            self._ptz_last_command_ts = execute_at
+            self._enqueue_ptz_command(execute_at, payload, move_duration)
 
 
     def stop(self) -> None:
@@ -661,6 +708,15 @@ class CameraHandler:
         if self._reconnect_thread and self._reconnect_thread.is_alive():
             # Give it a short chance to exit
             self._reconnect_thread.join(timeout=1)
+        if self._ptz_worker and self._ptz_worker.is_alive():
+            self._ptz_worker.join(timeout=1)
+        while not self._ptz_command_queue.empty():
+            try:
+                self._ptz_command_queue.get_nowait()
+                self._ptz_command_queue.task_done()
+            except Empty:
+                break
+        self._ptz_worker = None
         if self._cap:
             self._cap.release()
         if self._camera:

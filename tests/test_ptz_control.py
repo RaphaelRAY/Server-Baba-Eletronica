@@ -19,32 +19,35 @@ class TestPTZControl(unittest.TestCase):
         self.cam._ptz_pan_limit = 1.0
         self.cam._ptz_tilt_limit = 1.0
         self.cam._ptz_timeout = 1.0
+        self.addCleanup(self.cam.stop)
 
     def test_control_ptz_throttles_commands(self):
-        with patch('src.camera.handler.time.monotonic', side_effect=[1.0, 1.1, 1.3, 1.6]):
-            with patch.object(self.cam, '_sleep_interruptible') as sleep_mock:
-                sleep_mock.return_value = None
+        scheduled: list[tuple[float, dict, float]] = []
+
+        def fake_enqueue(execute_at, payload, duration):
+            scheduled.append((execute_at, payload, duration))
+
+        with patch('src.camera.handler.time.monotonic', side_effect=[1.0, 1.1]):
+            with patch.object(self.cam, '_enqueue_ptz_command', side_effect=fake_enqueue):
+                self.cam.control_ptz(0.5, 0.0)
                 self.cam.control_ptz(0.5, 0.0)
 
-                payload = self.cam._ptz_service.ContinuousMove.call_args[0][0]
-                self.assertEqual(payload['ProfileToken'], 'Profile000')
-                self.assertIn('Velocity', payload)
-                self.assertNotIn('Timeout', payload)
+        self.assertEqual(len(scheduled), 2)
 
-                expected_duration = min(self.cam._ptz_move_duration, self.cam._ptz_timeout)
+        first_execute_at, first_payload, first_duration = scheduled[0]
+        self.assertEqual(first_payload['ProfileToken'], 'Profile000')
+        self.assertIn('Velocity', first_payload)
+        self.assertAlmostEqual(
+            first_duration, min(self.cam._ptz_move_duration, self.cam._ptz_timeout)
+        )
 
-                self.cam.control_ptz(0.5, 0.0)
+        second_execute_at, second_payload, second_duration = scheduled[1]
+        self.assertEqual(second_payload['Velocity'], first_payload['Velocity'])
+        self.assertAlmostEqual(second_duration, first_duration)
 
-                self.assertEqual(self.cam._ptz_service.ContinuousMove.call_count, 2)
-                self.assertEqual(self.cam._ptz_service.Stop.call_count, 2)
-                self.cam._ptz_service.Stop.assert_called_with({'ProfileToken': 'Profile000'})
-
-                calls = sleep_mock.call_args_list
-                self.assertGreaterEqual(len(calls), 3)
-                self.assertAlmostEqual(calls[0].args[0], expected_duration)
-                throttle_wait = self.cam._ptz_command_interval - (1.3 - 1.1)
-                self.assertAlmostEqual(calls[1].args[0], throttle_wait)
-                self.assertAlmostEqual(calls[2].args[0], expected_duration)
+        expected_second = first_execute_at + self.cam._ptz_command_interval
+        self.assertAlmostEqual(second_execute_at, expected_second)
+        self.assertAlmostEqual(self.cam._ptz_last_command_ts, expected_second)
 
     def test_control_ptz_deadband(self):
         with patch('src.camera.handler.time.monotonic', return_value=10.0):
