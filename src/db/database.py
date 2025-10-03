@@ -1,7 +1,7 @@
 """Database module with in-memory, SQLAlchemy and MongoDB backends."""
 
 import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable
 
 import os
 import base64
@@ -67,6 +67,8 @@ class Database:
     def __init__(self, server: int = SERVER_MEMORY, url: Optional[str] = None):
         """Initialize the database backend."""
         self.server = server
+        # Optional sink to publish events when saved (e.g., SSE broadcast)
+        self._event_sink: Optional[Callable[[dict], None]] = None
         if server == self.SERVER_MEMORY:
             self._events = memory_events
         elif server == self.SERVER_MYSQL:
@@ -117,6 +119,22 @@ class Database:
                     continue
         # Track last saved timestamps by type
         self._last_saved_ts: Dict[str, float] = {}
+
+    def set_event_sink(self, sink: Callable[[dict], None] | None) -> None:
+        """Set a callback to receive sanitized event dicts after save."""
+        self._event_sink = sink
+
+    def _publish_event(self, event: dict) -> None:
+        """Publish an event to the sink without heavy image payloads."""
+        if not self._event_sink:
+            return
+        try:
+            # Strip large/binary fields if present
+            sanitized = {k: v for k, v in event.items() if k not in ("image_b64", "image_bytes")}
+            self._event_sink(sanitized)
+        except Exception:
+            # Never break main flow on publish errors
+            pass
 
     def save_event(self, data: dict) -> None:
         """Save a new event and optionally store an image.
@@ -179,6 +197,11 @@ class Database:
                 )
             except Exception:
                 pass
+            # Publish event to sink
+            try:
+                self._publish_event(event)
+            except Exception:
+                pass
         elif self.server == self.SERVER_MYSQL:
             session = self.Session()
             try:
@@ -191,6 +214,11 @@ class Database:
                 session.add(event)
                 session.commit()
                 self._last_saved_ts[typ] = now
+                # Publish via event dict serialization
+                try:
+                    self._publish_event(self._event_to_dict(event))
+                except Exception:
+                    pass
                 try:
                     logger.info(
                         "Evento salvo (sql): id=%s type=%s level=%s conf=%s image=%s",
@@ -215,6 +243,11 @@ class Database:
                 }
                 result = self._mongo_col.insert_one(doc)
                 self._last_saved_ts[typ] = now
+                # Publish using a lightweight dict
+                try:
+                    self._publish_event(self._mongo_doc_to_dict(doc))
+                except Exception:
+                    pass
                 try:
                     logger.info(
                         "Evento salvo (mongo): id=%s type=%s level=%s conf=%s image=%s",

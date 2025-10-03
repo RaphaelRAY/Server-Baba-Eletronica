@@ -1,6 +1,12 @@
-import socket
-import os
 import logging
+import math
+import os
+import re
+import socket
+import time
+from datetime import timedelta
+from typing import Any
+
 # Suprime logs do OpenCV/FFmpeg
 os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
 
@@ -8,7 +14,89 @@ import cv2
 from onvif import ONVIFCamera
 from threading import Thread, Event, Lock
 from collections import deque
-import time
+
+_DURATION_RE = re.compile(
+    r"^P(?:(?P<days>\d+)D)?"
+    r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?$"
+)
+
+
+def _env_float(
+    name: str,
+    default: float,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float:
+    """Obtém float positivo do ambiente com limites opcionais."""
+
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except Exception:
+        logging.warning("Valor inválido para %s: %r", name, raw)
+        return default
+    if min_value is not None and value < min_value:
+        value = min_value
+    if max_value is not None and value > max_value:
+        value = max_value
+    if value <= 0:
+        return default
+    return value
+
+
+def _as_iterable(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
+
+
+def _get_attr_or_key(obj: Any, name: str) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return float(value)
+        except Exception:
+            return None
+    try:
+        return float(str(value))
+    except Exception:
+        return None
+
+
+def _coerce_timeout_seconds(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return float(value)
+        except Exception:
+            return None
+    if isinstance(value, timedelta):
+        return max(value.total_seconds(), 0.0)
+    if isinstance(value, str):
+        match = _DURATION_RE.fullmatch(value.strip())
+        if not match:
+            return None
+        days = float(match.group("days") or 0)
+        hours = float(match.group("hours") or 0)
+        minutes = float(match.group("minutes") or 0)
+        seconds = float(match.group("seconds") or 0)
+        return max(days * 86400 + hours * 3600 + minutes * 60 + seconds, 0.0)
+    return None
 
 # Timeout global para conexões socket ONVIF (em segundos)
 socket.setdefaulttimeout(2)
@@ -87,6 +175,24 @@ class CameraHandler:
         self._reconnecting: bool = False
         self._reconnect_thread: Thread | None = None
         self._reconnect_delay: float = 5.0
+
+        # Configurações de PTZ
+        self._ptz_service = None
+        self._ptz_profile_token: str | None = None
+        self._ptz_configuration_token: str | None = None
+        self._ptz_timeout_min: float = 1.0
+        self._ptz_timeout_max: float = 10.0
+        self._ptz_timeout: float = 1.0
+        self._ptz_pan_limit: float | None = None
+        self._ptz_tilt_limit: float | None = None
+        self._ptz_lock = Lock()
+        self._ptz_last_command_ts: float = float("-inf")
+        self._ptz_command_interval: float = _env_float(
+            "PTZ_COMMAND_INTERVAL_SECS", 0.35, min_value=0.05
+        )
+        self._ptz_move_duration: float = _env_float(
+            "PTZ_MOVE_DURATION_SECS", 0.4, min_value=0.05
+        )
 
     def _sleep_interruptible(self, seconds: float, step: float = 0.1) -> None:
         """Sleep in small steps so stop() can interrupt long waits."""
@@ -223,7 +329,19 @@ class CameraHandler:
             if self.source == "onvif":
                 self._camera = ONVIFCamera(self.host, self.port, self.user, self.passwd)
                 media = self._camera.create_media_service()
-                profile = media.GetProfiles()[0]
+                self._ptz_service = None
+                try:
+                    self._ptz_service = self._camera.create_ptz_service()
+                except Exception as exc:
+                    logging.warning("Falha ao criar serviço PTZ: %s", exc)
+                    self._ptz_service = None
+
+                profile = self._select_media_profile(media)
+                if profile is None:
+                    raise RuntimeError("Nenhum profile disponível no serviço de mídia")
+
+                self._setup_ptz_capabilities(profile)
+
                 uri = media.GetStreamUri({
                     "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
                     "ProfileToken": profile.token,
@@ -294,6 +412,154 @@ class CameraHandler:
         self._thread = Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
 
+    def _select_media_profile(self, media_service) -> Any:
+        """Seleciona um profile que possua configuração PTZ quando disponível."""
+        try:
+            profiles = media_service.GetProfiles()
+        except Exception as exc:
+            logging.warning("Falha ao obter profiles ONVIF: %s", exc)
+            return None
+        if not profiles:
+            return None
+        for profile in profiles:
+            if getattr(profile, "PTZConfiguration", None):
+                return profile
+        return profiles[0]
+
+    def _setup_ptz_capabilities(self, profile: Any) -> None:
+        """Guarda tokens, limites de velocidade e timeout compatíveis com a câmera."""
+        self._ptz_pan_limit = None
+        self._ptz_tilt_limit = None
+        self._ptz_timeout_min = 1.0
+        self._ptz_timeout_max = 10.0
+        self._ptz_timeout = 1.0
+        self._ptz_profile_token = getattr(profile, "token", None)
+        ptz_config = getattr(profile, "PTZConfiguration", None)
+        self._ptz_configuration_token = getattr(ptz_config, "token", None)
+
+        timeout = _coerce_timeout_seconds(
+            getattr(ptz_config, "DefaultPTZTimeout", None)
+            if ptz_config
+            else None
+        )
+        if timeout is not None:
+            self._ptz_timeout = timeout
+
+        # Obtém limites detalhados, se o serviço PTZ estiver disponível
+        if not self._ptz_service or not self._ptz_configuration_token:
+            # Garante limites padrão seguros
+            if self._ptz_pan_limit is None:
+                self._ptz_pan_limit = 1.0
+            if self._ptz_tilt_limit is None:
+                self._ptz_tilt_limit = 1.0
+            self._ptz_timeout = self._clamp_timeout(self._ptz_timeout)
+            return
+
+        try:
+            options = self._ptz_service.GetConfigurationOptions(
+                {"ConfigurationToken": self._ptz_configuration_token}
+            )
+        except Exception as exc:
+            logging.warning("Falha ao obter opções PTZ: %s", exc)
+            if self._ptz_pan_limit is None:
+                self._ptz_pan_limit = 1.0
+            if self._ptz_tilt_limit is None:
+                self._ptz_tilt_limit = 1.0
+            self._ptz_timeout = self._clamp_timeout(self._ptz_timeout)
+            return
+
+        spaces = _get_attr_or_key(options, "Spaces")
+        pan_limit = self._ptz_pan_limit
+        tilt_limit = self._ptz_tilt_limit
+        for entry in (
+            "ContinuousPanTiltVelocitySpace",
+            "PanTiltVelocitySpace",
+            "VelocitySpace",
+        ):
+            for space in _as_iterable(_get_attr_or_key(spaces, entry)):
+                x_range = _get_attr_or_key(space, "XRange")
+                y_range = _get_attr_or_key(space, "YRange")
+                if x_range is None and y_range is None:
+                    range_info = _get_attr_or_key(space, "Range")
+                    x_range = _get_attr_or_key(range_info, "XRange")
+                    y_range = _get_attr_or_key(range_info, "YRange")
+
+                x_min = _coerce_float(_get_attr_or_key(x_range, "Min"))
+                x_max = _coerce_float(_get_attr_or_key(x_range, "Max"))
+                y_min = _coerce_float(_get_attr_or_key(y_range, "Min"))
+                y_max = _coerce_float(_get_attr_or_key(y_range, "Max"))
+
+                if x_min is not None and x_max is not None:
+                    limit = max(abs(x_min), abs(x_max))
+                    if limit > 0:
+                        pan_limit = limit if pan_limit is None else min(pan_limit, limit)
+                if y_min is not None and y_max is not None:
+                    limit = max(abs(y_min), abs(y_max))
+                    if limit > 0:
+                        tilt_limit = limit if tilt_limit is None else min(tilt_limit, limit)
+
+        timeout_range = None
+        for key in ("TimeoutRange", "PTZTimeout", "Timeout"):
+            timeout_range = _get_attr_or_key(options, key)
+            if timeout_range:
+                break
+
+        min_timeout = _coerce_timeout_seconds(_get_attr_or_key(timeout_range, "Min"))
+        max_timeout = _coerce_timeout_seconds(_get_attr_or_key(timeout_range, "Max"))
+
+        if min_timeout is not None and max_timeout is not None and min_timeout <= max_timeout:
+            self._ptz_timeout_min = max(0.1, min_timeout)
+            self._ptz_timeout_max = max(min_timeout, max_timeout)
+        self._ptz_timeout = self._clamp_timeout(self._ptz_timeout)
+
+        self._ptz_pan_limit = pan_limit if pan_limit is not None else 1.0
+        self._ptz_tilt_limit = tilt_limit if tilt_limit is not None else 1.0
+
+    def _clamp_timeout(self, value: float | None) -> float:
+        base = self._ptz_timeout_min if self._ptz_timeout_min else 0.5
+        max_allowed = self._ptz_timeout_max if self._ptz_timeout_max else max(base, 1.0)
+        if value is None:
+            value = base
+        try:
+            value = float(value)
+        except Exception:
+            value = base
+        if value <= 0:
+            value = base
+        value = max(base, value)
+        value = min(max_allowed, value)
+        return value
+
+    def _refresh_ptz_state(self) -> None:
+        if not self.ptz_enabled or self._camera is None:
+            return
+        try:
+            media = self._camera.create_media_service()
+        except Exception as exc:
+            logging.warning("Falha ao atualizar perfil PTZ: %s", exc)
+            return
+
+        if self._ptz_service is None:
+            try:
+                self._ptz_service = self._camera.create_ptz_service()
+            except Exception as exc:
+                logging.warning("Falha ao recriar serviço PTZ: %s", exc)
+                self._ptz_service = None
+                return
+
+        profile = self._select_media_profile(media)
+        if profile is None:
+            return
+        self._setup_ptz_capabilities(profile)
+
+    def _format_timeout(self) -> str:
+        seconds = self._clamp_timeout(self._ptz_timeout)
+        self._ptz_timeout = seconds
+        if abs(seconds - round(seconds)) < 1e-3:
+            return f"PT{int(round(seconds))}S"
+        numeric = f"{seconds:.2f}".rstrip("0").rstrip(".")
+        return f"PT{numeric}S"
+
     def _schedule_reconnect(self) -> None:
         """Agenda tentativas de reconexão a cada 5s até sucesso."""
         if self._reconnecting or self._stop.is_set():
@@ -320,41 +586,71 @@ class CameraHandler:
         """Retorna True se a thread e a captura estiverem ativas."""
         return bool(self._cap and self._cap.isOpened() and self._thread and self._thread.is_alive())
 
-    def control_ptz(self, err_x: float, err_y: float, kp: float = 0.6):
-        """Controla PTZ (ativo somente em ONVIF)."""
+
+
+    def control_ptz(self, err_x: float, err_y: float, kp: float = 0.4) -> None:
         if not self.ptz_enabled or self._camera is None:
             return
-        try:
-            ptz = self._camera.create_ptz_service()
-            media = self._camera.create_media_service()
-            profile = media.GetProfiles()[0]
-            token = profile.token
-        
-            # Aplica ganho proporcional
-            vx = kp * err_x
-            vy = kp * err_y
-        
-            # Limita velocidades entre -1.0 e 1.0
-            vx = max(min(vx, 1.0), -1.0)
-            vy = max(min(vy, 1.0), -1.0)
-        
-            # Monta comando de movimento
-            ptz.ContinuousMove({
-                "ProfileToken": token,
-                "Velocity": {
-                    "PanTilt": {
-                        "x": -vx,
-                        "y": -vy  # Inverte se necessário (ajuste depende da câmera)
-                    }
-                }
-            })
-        
-            # Aguarda movimento curto, depois para
-            time.sleep(0.2)
-            ptz.Stop({"ProfileToken": token})
-        
-        except Exception as e:
-            logging.warning("Falha no controle PTZ: %s", e)
+        if not self._ptz_profile_token or not self._ptz_service:
+            self._refresh_ptz_state()
+        if not self._ptz_service or not self._ptz_profile_token:
+            return
+
+        with self._ptz_lock:
+            # err_x/err_y já vêm em [-1, 1] do processing_loop
+
+            deadband = 0.02
+            if abs(err_x) < deadband:
+                err_x = 0.0
+            if abs(err_y) < deadband:
+                err_y = 0.0
+
+            def shape(e: float) -> float:
+                return math.tanh(2.5 * e)
+
+            vx = kp * shape(err_x)
+            vy = kp * shape(err_y)
+
+            min_pan, min_tilt = 0.12, 0.12
+            if vx != 0.0:
+                vx = math.copysign(max(abs(vx), min_pan), vx)
+            if vy != 0.0:
+                vy = math.copysign(max(abs(vy), min_tilt), vy)
+
+            pan_limit = self._ptz_pan_limit if self._ptz_pan_limit is not None else 1.0
+            tilt_limit = self._ptz_tilt_limit if self._ptz_tilt_limit is not None else 1.0
+            vx = max(min(vx, pan_limit), -pan_limit)
+            vy = max(min(vy, tilt_limit), -tilt_limit)
+
+            if vx == 0.0 and vy == 0.0:
+                return
+
+            target_time = self._ptz_last_command_ts + self._ptz_command_interval
+            now = time.monotonic()
+            if target_time > now:
+                wait_time = target_time - now
+                if wait_time > 0:
+                    self._sleep_interruptible(wait_time)
+                    if self._stop.is_set():
+                        return
+
+            payload = {
+                "ProfileToken": self._ptz_profile_token,
+                "Velocity": {"PanTilt": {"x": vx, "y": -vy}},
+            }
+
+            move_duration = max(0.0, min(self._ptz_move_duration, self._ptz_timeout))
+
+            try:
+                self._ptz_service.ContinuousMove(payload)
+                print(payload)
+                if move_duration > 0:
+                    self._sleep_interruptible(move_duration)
+                self._ptz_service.Stop({"ProfileToken": self._ptz_profile_token})
+            except Exception as exc:
+                logging.warning("PTZ move/stop falhou: %s", exc)
+            finally:
+                self._ptz_last_command_ts = time.monotonic()
 
 
     def stop(self) -> None:
@@ -373,3 +669,6 @@ class CameraHandler:
                 self._camera.devicemgmt.Stop()
             except:
                 pass
+        self._ptz_service = None
+        self._ptz_profile_token = None
+        self._ptz_configuration_token = None

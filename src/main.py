@@ -2,7 +2,11 @@ import os
 import time
 import cv2
 import logging
+import json
+import asyncio
+from typing import List
 from threading import Thread, Event
+from queue import Queue, Empty, Full
 
 from fastapi import FastAPI, HTTPException, Response, Query, Path
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -93,7 +97,7 @@ position_monitor = PositionMonitor(
     database,
     face_conf_min=pose_face_conf,
     no_face_frames_threshold=pose_no_face_frames,
-)
+    )
 
 # Tolerate missing Firebase setup so app keeps running
 try:
@@ -114,9 +118,72 @@ def _get_env_bool(name: str, default: bool) -> bool:
 # Mostrar poses em janela (configurável via env: SHOW_POSE_WINDOW)
 SHOW_POSE_WINDOW = _get_env_bool("SHOW_POSE_WINDOW", True)
 
+# Windows: use Selector event loop to avoid noisy Proactor errors on disconnects
+if os.name == "nt":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
+
+# Simple SSE broker to fan-out new events to connected clients
+class SseBroker:
+    """Broadcasts events to subscribers via per-client asyncio queues."""
+
+    def __init__(self) -> None:
+        self._subscribers: List[asyncio.Queue] = []
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._closed: bool = False
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
+        self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        try:
+            self._subscribers.remove(q)
+        except ValueError:
+            pass
+
+    def publish(self, event: dict) -> None:
+        # Schedule puts on the app loop from any thread
+        if not self._subscribers or self._closed:
+            return
+        if self._loop is None:
+            return
+        payload = json.dumps(event, separators=(",", ":"), default=str)
+        for q in list(self._subscribers):
+            try:
+                self._loop.call_soon_threadsafe(q.put_nowait, payload)
+            except Exception:
+                # Drop silently if queue is full or loop closed
+                pass
+
+    def close(self) -> None:
+        """Mark broker closed and wake all subscribers to allow fast shutdown."""
+        self._closed = True
+        if not self._loop:
+            return
+        for q in list(self._subscribers):
+            try:
+                self._loop.call_soon_threadsafe(q.put_nowait, "__shutdown__")
+            except Exception:
+                pass
+
+
+# Global broker instance
+sse_broker = SseBroker()
+
 # Eventos para controle de threads de processamento
 t_processing_stop = Event()
 t_processing_thread = Thread(target=lambda: None)
+pose_queue: Queue = Queue(maxsize=2)
+detection_queue: Queue = Queue(maxsize=2)
+t_pose_thread = Thread(target=lambda: None)
+t_detection_thread = Thread(target=lambda: None)
 
 
 # Função de loop contínuo de processamento
@@ -132,32 +199,74 @@ def processing_loop():
             time.sleep(0.1)
             continue
 
-        # Analisa pose e opcionalmente exibe janela
-        position_monitor.analyze_frame(frame, show=SHOW_POSE_WINDOW)
-
-        results = processor.process_frame_data(frame)
-        if results is None:
-            results = []
-        presence_monitor.handle_detections(results)
-
-        height, width = frame.shape[:2]
-
-        for r in results:
-            for box in r.boxes:
-                x1, y1, x2, y2 = map(float, box.xyxy[0])
-                cx = (x1 + x2) / 2
-                cy = (y1 + y2) / 2
-
-                err_x = (cx - width / 2) / width
-                err_y = (cy - height / 2) / height
-
-                # Só move se estiver fora da zona morta e PTZ habilitado
-                if camera.ptz_enabled and (abs(err_x) > 0.1 or abs(err_y) > 0.1):
-                    camera.control_ptz(err_x, err_y, kp=0.6)
-
-                break  # só a primeira detecção relevante
+        _enqueue_frame(pose_queue, frame)
+        _enqueue_frame(detection_queue, frame)
 
         time.sleep(0.01)  # pequena pausa para aliviar CPU
+
+
+def _enqueue_frame(queue_obj: Queue, frame):
+    """Enfileira cópia do frame, descartando o mais antigo se estiver cheio."""
+    try:
+        queue_obj.put(frame.copy(), timeout=0.05)
+    except Full:
+        try:
+            queue_obj.get_nowait()
+        except Empty:
+            pass
+        try:
+            queue_obj.put(frame.copy(), timeout=0.05)
+        except Full:
+            pass
+
+
+def pose_loop():
+    """Processa frames dedicados à análise de pose."""
+    while not t_processing_stop.is_set():
+        try:
+            frame = pose_queue.get(timeout=0.1)
+        except Empty:
+            continue
+
+        try:
+            position_monitor.analyze_frame(frame, show=SHOW_POSE_WINDOW)
+        except Exception as exc:
+            logging.exception("Erro na thread de pose: %s", exc)
+
+
+def detection_loop():
+    """Processa frames dedicados à detecção e controle PTZ."""
+    while not t_processing_stop.is_set():
+        try:
+            frame = detection_queue.get(timeout=0.1)
+        except Empty:
+            continue
+
+        try:
+            results = processor.process_frame_data(frame)
+            if results is None:
+                results = []
+            presence_monitor.handle_detections(results)
+
+            height, width = frame.shape[:2]
+
+            for r in results:
+                for box in r.boxes:
+                    x1, y1, x2, y2 = map(float, box.xyxy[0])
+                    cx = (x1 + x2) / 2
+                    cy = (y1 + y2) / 2
+
+                    err_x = (cx - width / 2) / width
+                    err_y = (cy - height / 2) / height
+
+                    # Só move se estiver fora da zona morta e PTZ habilitado
+                    if camera.ptz_enabled and (abs(err_x) > 0.1 or abs(err_y) > 0.1):
+                        camera.control_ptz(err_x, err_y)
+                        time.sleep(0.1)
+
+                    break  # só a primeira detecção relevante
+        except Exception as exc:
+            logging.exception("Erro na thread de detecção: %s", exc)
 
 
 # FastAPI com contexto de vida (lifespan)
@@ -167,21 +276,39 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.info(f"Iniciando câmera ({video_source}) e loop de análise")
+    # Bind loop to SSE broker and hook DB sink
+    try:
+        sse_broker.set_loop(asyncio.get_running_loop())
+        database.set_event_sink(lambda ev: sse_broker.publish(ev))
+    except Exception:
+        pass
     # 1) Inicia captura de vídeo
     camera.start()
     # 2) Reseta evento e inicia thread de processamento
     t_processing_stop.clear()
-    global t_processing_thread
+    global pose_queue, detection_queue, t_processing_thread, t_pose_thread, t_detection_thread
+    pose_queue = Queue(maxsize=2)
+    detection_queue = Queue(maxsize=2)
     t_processing_thread = Thread(target=processing_loop, daemon=True)
+    t_pose_thread = Thread(target=pose_loop, daemon=True)
+    t_detection_thread = Thread(target=detection_loop, daemon=True)
     t_processing_thread.start()
-    
+    t_pose_thread.start()
+    t_detection_thread.start()
+
 
     yield  # aplica as rotas e mantém serviço vivo
 
     # No shutdown, sinaliza e aguarda thread terminar
     logging.info("Parando loop de análise")
     t_processing_stop.set()
+    try:
+        sse_broker.close()
+    except Exception:
+        pass
     t_processing_thread.join(timeout=1)
+    t_pose_thread.join(timeout=1)
+    t_detection_thread.join(timeout=1)
     camera.stop()
     if SHOW_POSE_WINDOW:
         cv2.destroyAllWindows()
@@ -248,7 +375,7 @@ def get_pose_snapshot():
 
 @app.get("/api/stream")
 def stream():
-    """MJPEG stream com overlay de latência."""
+    """MJPEG stream contínuo sem overlay de texto."""
 
     # Verifica disponibilidade de frame antes de iniciar o stream
     # Se não houver frame, retorna erro em vez de manter conexão aberta.
@@ -282,16 +409,6 @@ def stream():
                 if frame is None:
                     time.sleep(0.1)
                     continue
-                lat = camera.get_last_latency() or 0.0
-                cv2.putText(
-                    frame,
-                    f"Lat: {lat*1000:.1f} ms",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 0),
-                    2,
-                )
                 _, jpg = cv2.imencode(".jpg", frame)
                 yield (
                     b"--frame\r\n"
@@ -303,10 +420,46 @@ def stream():
         except GeneratorExit:
             # Client disconnected or server shutting down; exit quietly
             return
+        except (BrokenPipeError, ConnectionResetError):
+            # Client disconnected abruptly
+            return
 
     return StreamingResponse(
         mjpeg_generator(), media_type="multipart/x-mixed-replace; boundary=frame"
     )
+
+
+@app.get("/api/events/sse")
+async def events_sse():
+    """Server-Sent Events stream of newly saved events (no images)."""
+
+    async def event_stream():
+        q = sse_broker.subscribe()
+        keepalive = 1.0
+        try:
+            while not t_processing_stop.is_set():
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=keepalive)
+                    if data == "__shutdown__":
+                        break
+                    # Proper SSE framing: data: <json>\n\n
+                    yield f"data: {data}\n\n"
+                except asyncio.TimeoutError:
+                    # Send a comment to keep the connection alive
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            # Client disconnected
+            return
+        finally:
+            sse_broker.unsubscribe(q)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        # Disable proxy buffering if any (useful for nginx)
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
 
 
 @app.post("/api/register-token")
