@@ -31,6 +31,9 @@ Copie `.env.example` para `.env` e ajuste conforme a fonte de vídeo e integraç
     - Coleção (opcional): `MONGO_COLLECTION=events`
 - CORS (frontend): `CORS_ORIGINS=http://localhost:3000`
 - Log: `LOG_LEVEL=INFO`
+- Controle PTZ:
+  - `PTZ_COMMAND_INTERVAL_SECS=0.35` (intervalo mínimo entre comandos consecutivos)
+  - `PTZ_MOVE_DURATION_SECS=0.4` (tempo máximo do movimento contínuo antes do STOP)
 
 ## Executar
 
