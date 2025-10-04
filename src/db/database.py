@@ -39,6 +39,14 @@ Base = declarative_base()
 memory_events: List[Dict[str, str]] = []
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Return True when environment variable matches common truthy values."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 if SQLALCHEMY_AVAILABLE:
     class Event(Base):
         """Tabela de eventos para o banco SQL."""
@@ -119,6 +127,7 @@ class Database:
                     continue
         # Track last saved timestamps by type
         self._last_saved_ts: Dict[str, float] = {}
+        self._log_suppressed_events = _env_flag("EVENT_LOG_SUPPRESSED")
 
     def set_event_sink(self, sink: Callable[[dict], None] | None) -> None:
         """Set a callback to receive sanitized event dicts after save."""
@@ -152,14 +161,15 @@ class Database:
         cooldown = self._cooldown_by_type.get(typ, self._cooldown_default)
         last_ts = self._last_saved_ts.get(typ)
         if cooldown and last_ts is not None and (now - last_ts) < cooldown:
-            try:
-                logger.info(
-                    "Evento suprimido por cooldown: type=%s restante=%.1fs",
-                    typ,
-                    cooldown - (now - last_ts),
-                )
-            except Exception:
-                pass
+            if self._log_suppressed_events:
+                try:
+                    logger.info(
+                        "Evento suprimido por cooldown: type=%s restante=%.1fs",
+                        typ,
+                        cooldown - (now - last_ts),
+                    )
+                except Exception:
+                    pass
             return
 
         # Prepare optional image save
