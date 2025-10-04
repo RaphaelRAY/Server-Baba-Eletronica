@@ -1,9 +1,11 @@
 import os
+import sys
 import time
 import cv2
 import logging
 import json
 import asyncio
+import pathlib
 from typing import List
 from threading import Thread, Event
 from queue import Queue, Empty, Full
@@ -11,6 +13,12 @@ from queue import Queue, Empty, Full
 from fastapi import FastAPI, HTTPException, Response, Query, Path
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+
+# Ensure project root is discoverable when executing as a script.
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from src.utils.image_utils import encode_jpeg
 
 from src.camera import CameraHandler
