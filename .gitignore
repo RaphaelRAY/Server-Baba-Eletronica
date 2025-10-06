@@ -168,3 +168,5 @@ WhatsApp Video 2025-09-12 at 17.52.03_ec0be91a.mp4
 src/notifications/notifier.py
 tokens.txt
 push-test-15206-firebase-adminsdk-fbsvc-9136518ebe.json
+
+*.json
