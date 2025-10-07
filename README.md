@@ -45,6 +45,12 @@ python src/main.py
 
 Por padrão o servidor sobe em `http://localhost:8000`.
 
+Para expor em outras interfaces (ex.: rede local) com recarregamento automatico, execute:
+
+```bash
+python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
 ## Endpoints
 
 - GET `/api/status`: estado da câmera (200 conectado, 503 desconectado).
