@@ -45,7 +45,7 @@ class PositionMonitor:
         db: Database | None = None,
         *,
         model: YOLO | None = None,
-        model_path: str = "yolo11n-pose.pt",
+        model_path: str = "yolo11l-pose.pt",
         model_conf: float = 0.25,
         model_iou: float = 0.5,
         face_down_margin: float = 20.0,
@@ -401,17 +401,15 @@ class PositionMonitor:
                 self._side_pose_count >= side_threshold
                 and not self.face_down_suspected_sent
             ):
-                confidence = min(max(0.3 + 0.4 * metrics.risk_score, 0.0), 1.0)
-                level = "Importante" if confidence < 0.6 else "Crítico"
                 self._notify_all(
                     "Posição suspeita",
                     "Bebê de lado — monitorando possível virada",
-                    level=level,
+                    level="Importante",
                 )
                 self._record_event(
                     "side_suspected",
-                    confidence=confidence,
-                    level=level,
+                    confidence=0.3,
+                    level="Importante",
                     extra={"risk": metrics.risk_score},
                 )
                 self.face_down_suspected_sent = True

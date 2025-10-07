@@ -13,7 +13,7 @@ class VideoProcessor:
         self.camera = camera_handler
 
         # Carrega modelo leve YOLOv8n (pré-treinado para detecção de pessoas)
-        self.model = YOLO("yolo11n.pt")
+        self.model = YOLO("yolo11l.pt")
 
     def process_frame(self):
         """Return frame with person detections drawn."""
