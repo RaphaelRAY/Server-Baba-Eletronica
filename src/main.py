@@ -271,7 +271,7 @@ def detection_loop():
                     # Só move se estiver fora da zona morta e PTZ habilitado
                     if camera.ptz_enabled and (abs(err_x) > 0.1 or abs(err_y) > 0.1):
                         camera.control_ptz(err_x, err_y)
-                        time.sleep(0.1)
+                        time.sleep(2)
 
                     break  # só a primeira detecção relevante
         except Exception as exc:

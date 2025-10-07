@@ -37,8 +37,8 @@ class TestPositionMonitorSuspected(unittest.TestCase):
             (0, 0),
             (0, 0),
             (0, 0),
-            (0, 20),  # left_shoulder
-            (0, 20),  # right_shoulder
+            (-40, 20),  # left_shoulder
+            (40, 20),  # right_shoulder
         ]
         kps.conf = [
             0.0,  # nose low conf

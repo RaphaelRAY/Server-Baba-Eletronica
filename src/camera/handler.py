@@ -588,7 +588,7 @@ class CameraHandler:
 
 
 
-    def control_ptz(self, err_x: float, err_y: float, kp: float = 0.4) -> None:
+    def control_ptz(self, err_x: float, err_y: float, kp: float = 0.8) -> None:
         if not self.ptz_enabled or self._camera is None:
             return
         if not self._ptz_profile_token or not self._ptz_service:

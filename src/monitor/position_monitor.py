@@ -1,4 +1,7 @@
-from typing import List
+from typing import List, Iterable
+from collections import deque
+from dataclasses import dataclass
+import math
 
 import cv2
 from ultralytics import YOLO
@@ -16,6 +19,22 @@ from src.db import Database
 from src.utils.image_utils import encode_jpeg
 
 
+@dataclass
+class PoseMetrics:
+    """Aggregated pose metrics for decision making."""
+
+    face_visible: bool
+    strong_face_down: bool
+    is_face_down: bool
+    is_side: bool
+    orientation_inverted: bool
+    risk_score: float
+    angle_degrees: float | None
+    nose_y_avg: float | None
+    shoulders_y: float | None
+    head_y: float | None
+
+
 class PositionMonitor:
     """Monitor pose estimation to detect dangerous positions."""
 
@@ -26,53 +45,59 @@ class PositionMonitor:
         db: Database | None = None,
         *,
         model: YOLO | None = None,
+        model_path: str = "yolo11n-pose.pt",
+        model_conf: float = 0.25,
+        model_iou: float = 0.5,
         face_down_margin: float = 20.0,
         face_conf_min: float = 0.3,
         no_face_frames_threshold: int = 12,
+        smoothing_window: int = 5,
+        side_offset_ratio: float = 0.3,
+        risk_threshold: float = 0.7,
     ):
         """Store dependencies and pose parameters."""
         self.notifier = notifier
         self.registry = registry
         self.db = db
-        self.model = model or YOLO("yolo11n-pose.pt")
+        self._model = model
+        self._model_path = model_path
+        self._model_conf = float(model_conf)
+        self._model_iou = float(model_iou)
         self.face_down_margin = face_down_margin
         self.face_conf_min = float(face_conf_min)
         self.no_face_frames_threshold = int(no_face_frames_threshold)
-        self.face_down_sent = False
-        self.face_down_suspected_sent = False
+        self._risk_threshold = float(risk_threshold)
+        self._side_offset_ratio = float(side_offset_ratio)
+        self._has_face_down_alert = False
+        self._has_face_down_suspected = False
         self._no_face_count = 0
+        self._side_pose_count = 0
+        self._orientation_history: deque[float] = deque(maxlen=5)
+        self._lateral_history: deque[float] = deque(maxlen=5)
         self._last_frame = None
         self._pose_window_initialized = False
         self._pose_window_name = "Pose"
+        self._nose_y_history: deque[float] = deque(maxlen=max(1, int(smoothing_window)))
 
     def analyze_frame(self, frame, show: bool = False) -> None:
         """Run pose model and optionally display keypoints."""
         # Cache frame for potential snapshot on event
         self._last_frame = frame
-        results = self.model(frame)
+        processed = self._preprocess_frame(frame)
+        results = self._get_model().predict(
+            processed,
+            conf=self._model_conf,
+            iou=self._model_iou,
+            verbose=False,
+        )
         if show:
-            if not self._pose_window_initialized:
-                try:
-                    cv2.namedWindow(
-                        self._pose_window_name,
-                        cv2.WINDOW_NORMAL | getattr(cv2, "WINDOW_GUI_EXPANDED", 0),
-                    )
-                except Exception:
-                    cv2.namedWindow(self._pose_window_name, cv2.WINDOW_NORMAL)
-                self._pose_window_initialized = True
-            try:
-                render = results[0].plot() if results else frame
-            except Exception:
-                render = frame
-            if render is None:
-                render = frame
-            cv2.imshow(self._pose_window_name, render)
-            cv2.waitKey(1)
+            self._render_pose(results, frame)
         self.handle_pose(results)
         #print(results[0].keypoints)  # Debug: show raw keypoints data
 
     def handle_pose(self, results: List) -> None:
         """Handle pose results and notify if face down."""
+        alert_triggered = False
         for result in results or []:
             keypoints = getattr(result, "keypoints", None)
             if keypoints is None:
@@ -88,97 +113,153 @@ class PositionMonitor:
                 compact = [(round(float(x), 1), round(float(y), 1)) for x, y in points]
                 logger.debug("Pose keypoints (%d): %s", len(compact), compact)
 
-            # Use extracted points for face-down detection (indices 0,5,6: nose and shoulders)
-            try:
-                nose_y = points[0][1]
-                left_shoulder_y = points[5][1]
-                right_shoulder_y = points[6][1]
-            except Exception:
-                # Fallback to original access pattern if structure differs
-                nose_y = keypoints.xy[0][1]
-                left_shoulder_y = keypoints.xy[5][1]
-                right_shoulder_y = keypoints.xy[6][1]
-            # Confidence of face keypoints (if available)
             confs = self._extract_confidences(keypoints)
-            def _conf(idx: int, default: float = 1.0) -> float:
-                try:
-                    c = confs[idx]
-                    return float(c) if c is not None else default
-                except Exception:
-                    return default
-
-            face_visible = (
-                _conf(0, 0.0) >= self.face_conf_min  # nose
-                or _conf(1, 0.0) >= self.face_conf_min  # left_eye
-                or _conf(2, 0.0) >= self.face_conf_min  # right_eye
-                or _conf(3, 0.0) >= self.face_conf_min  # left_ear
-                or _conf(4, 0.0) >= self.face_conf_min  # right_ear
-            )
-
-            shoulders_y_max = max(left_shoulder_y, right_shoulder_y)
-            strong_face_down = nose_y > shoulders_y_max + self.face_down_margin
-
-            if strong_face_down:
-                # reset no-face state
-                self._no_face_count = 0
-                self.face_down_suspected_sent = False
-                if not self.face_down_sent:
-                    self._notify_all("Bebê de bruços", "Rosto voltado para baixo", level="Urgente")
-                    # Persist event when first detected
-                    if self.db is not None:
-                        try:
-                            payload = {"type": "face_down", "confidence": 1.0, "level": "Urgente"}
-                            if self._last_frame is not None:
-                                try:
-                                    payload["image_bytes"] = encode_jpeg(self._last_frame)
-                                except Exception:
-                                    pass
-                            self.db.save_event(payload)
-                        except Exception:
-                            pass
-                    self.face_down_sent = True
+            metrics = self._compute_pose_metrics(points, confs, keypoints)
+            alert_triggered = self._process_pose_state(metrics)
+            if alert_triggered:
                 return
+        if not alert_triggered:
+            self.face_down_sent = False
 
-            # Weak/suspected face-down: face not visible for consecutive frames
-            if not face_visible:
-                self._no_face_count += 1
-                if (
-                    self._no_face_count >= self.no_face_frames_threshold
-                    and not self.face_down_suspected_sent
-                ):
-                    # Raise a suspected event (lower confidence)
-                    self._notify_all(
-                        "Possível bebê de bruços",
-                        "Rosto não visível e posição suspeita",
-                        level="Importante",
-                    )
-                    if self.db is not None:
-                        try:
-                            payload = {
-                                "type": "face_down_suspected",
-                                "confidence": 0.5,
-                                "level": "Importante",
-                            }
-                            if self._last_frame is not None:
-                                try:
-                                    payload["image_bytes"] = encode_jpeg(self._last_frame)
-                                except Exception:
-                                    pass
-                            self.db.save_event(payload)
-                        except Exception:
-                            pass
-                    self.face_down_suspected_sent = True
-                # continue to next result if any
-            else:
-                # Face visible resets suspected counter
-                self._no_face_count = 0
-                self.face_down_suspected_sent = False
-        self.face_down_sent = False
+    def _preprocess_frame(self, frame):
+        """Enhance frame contrast to aid detection while preserving original frame."""
+        if frame is None:
+            return frame
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            eq = cv2.equalizeHist(gray)
+            return cv2.cvtColor(eq, cv2.COLOR_GRAY2BGR)
+        except Exception:
+            logger.debug("Frame preprocessing skipped", exc_info=True)
+            return frame
 
     def _notify_all(self, title: str, message: str, *, level: str = "info") -> None:
         """Send a notification to all tokens with level."""
         for token in self.registry.get_all():
             self.notifier.notify(token, title=title, message=message, level=level)
+
+    def _compute_pose_metrics(
+        self,
+        points: list[tuple[float, float]],
+        confs: list[float | None],
+        keypoints,
+    ) -> PoseMetrics:
+        """Aggregate geometric and confidence-based cues for pose assessment."""
+        nose = self._safe_point(points, 0)
+        left_eye = self._safe_point(points, 1)
+        right_eye = self._safe_point(points, 2)
+        left_ear = self._safe_point(points, 3)
+        right_ear = self._safe_point(points, 4)
+        left_shoulder = self._safe_point(points, 5)
+        right_shoulder = self._safe_point(points, 6)
+        left_hip = self._safe_point(points, 11)
+        right_hip = self._safe_point(points, 12)
+
+        shoulders_y = self._mean(p[1] for p in (left_shoulder, right_shoulder) if p)
+        shoulder_center = None
+        shoulder_span = None
+        orientation_inverted = False
+        side_aligned = False
+        if left_shoulder and right_shoulder:
+            shoulder_center = (
+                (left_shoulder[0] + right_shoulder[0]) / 2,
+                shoulders_y,
+            )
+            shoulder_span = abs(left_shoulder[0] - right_shoulder[0])
+            diff_x = left_shoulder[0] - right_shoulder[0]
+            self._orientation_history.append(diff_x)
+            smooth_diff_x = sum(self._orientation_history) / len(self._orientation_history)
+            abs_diff = abs(smooth_diff_x)
+            if smooth_diff_x > 30:
+                orientation_inverted = True
+            elif abs_diff < 25:
+                side_aligned = True
+
+        if left_shoulder and right_shoulder and left_hip and right_hip:
+            inverted_upper = left_shoulder[0] > right_shoulder[0]
+            inverted_lower = left_hip[0] > right_hip[0]
+            if inverted_upper and inverted_lower:
+                orientation_inverted = True
+
+        head_components = [
+            candidate[1]
+            for candidate in (nose, left_eye, right_eye, left_ear, right_ear)
+            if candidate
+        ]
+        head_y = self._mean(head_components)
+
+        nose_y = nose[1] if nose else None
+        nose_y_avg = self._update_nose_history(nose_y)
+        reference_y = head_y if head_y is not None else nose_y_avg
+
+        strong_face_down = False
+        if shoulders_y is not None and reference_y is not None:
+            strong_face_down = reference_y > shoulders_y + self.face_down_margin
+        if orientation_inverted:
+            strong_face_down = True
+
+        fallback_face_down = False
+        if not strong_face_down:
+            fallback_face_down = self._fallback_face_down(keypoints)
+            strong_face_down = fallback_face_down
+
+        is_side = side_aligned
+        if nose and shoulder_center and shoulder_span is not None and shoulder_span > 0:
+            side_offset = abs(nose[0] - shoulder_center[0])
+            is_side = is_side or (side_offset > shoulder_span * self._side_offset_ratio)
+
+        if nose and shoulder_center:
+            lateral_offset = nose[0] - shoulder_center[0]
+            self._lateral_history.append(lateral_offset)
+            if (
+                len(self._lateral_history) >= self._lateral_history.maxlen
+                and not orientation_inverted
+            ):
+                sign_changes = sum(
+                    1
+                    for i in range(1, len(self._lateral_history))
+                    if self._lateral_history[i] * self._lateral_history[i - 1] < 0
+                )
+                if sign_changes >= 2:
+                    is_side = False
+
+        angle = self._compute_head_angle(nose, shoulder_center)
+
+        face_visible = self._is_face_visible(confs)
+        face_conf_vals = [c for c in confs[:5] if c is not None]
+        face_conf_avg = sum(face_conf_vals) / len(face_conf_vals) if face_conf_vals else 0.0
+
+        distance_component = 0.0
+        if shoulders_y is not None and reference_y is not None:
+            distance_component = max(0.0, reference_y - shoulders_y)
+        distance_component = min(1.0, distance_component / 30.0)
+
+        conf_component = 1.0 - max(0.0, min(face_conf_avg, 1.0))
+        angle_component = min(1.0, max(0.0, (angle or 0.0) / 120.0))
+
+        risk_score = (
+            0.15 * distance_component
+            + 0.45 * conf_component
+            + 0.4 * (1.0 if orientation_inverted else angle_component)
+        )
+        if is_side and not orientation_inverted:
+            risk_score += 0.1
+        risk_score = min(1.0, max(0.0, risk_score))
+
+        is_face_down = ((strong_face_down and not is_side) or risk_score >= self._risk_threshold)
+
+        return PoseMetrics(
+            face_visible=face_visible,
+            strong_face_down=strong_face_down and not is_side,
+            is_face_down=is_face_down,
+            is_side=is_side,
+            orientation_inverted=orientation_inverted,
+            risk_score=risk_score,
+            angle_degrees=angle,
+            nose_y_avg=nose_y_avg,
+            shoulders_y=shoulders_y,
+            head_y=head_y,
+        )
 
     def _extract_xy_points(self, keypoints) -> list[tuple[float, float]]:
         """Convert various keypoints.xy shapes into a list of (x, y) floats.
@@ -222,6 +303,153 @@ class PositionMonitor:
             return points
         except Exception:
             return []
+
+    def _get_model(self) -> YOLO:
+        """Load YOLO model on first use to avoid blocking constructor."""
+        if self._model is None:
+            self._model = YOLO(self._model_path)
+        return self._model
+
+    def _render_pose(self, results, frame) -> None:
+        """Render pose output in a resizable window when requested."""
+        if not self._pose_window_initialized:
+            try:
+                cv2.namedWindow(
+                    self._pose_window_name,
+                    cv2.WINDOW_NORMAL | getattr(cv2, "WINDOW_GUI_EXPANDED", 0),
+                )
+            except Exception:
+                cv2.namedWindow(self._pose_window_name, cv2.WINDOW_NORMAL)
+            self._pose_window_initialized = True
+        try:
+            render = results[0].plot() if results else frame
+        except Exception:
+            logger.exception("Failed to render pose frame")
+            render = frame
+        if render is None:
+            render = frame
+        cv2.imshow(self._pose_window_name, render)
+        cv2.waitKey(1)
+        wnd_prop = getattr(cv2, "WND_PROP_VISIBLE", None)
+        try:
+            if wnd_prop is not None and hasattr(cv2, "getWindowProperty"):
+                visible = cv2.getWindowProperty(self._pose_window_name, wnd_prop)
+                if isinstance(visible, (int, float)) and visible < 1:
+                    cv2.destroyAllWindows()
+                    self._pose_window_initialized = False
+        except Exception:
+            logger.debug("Pose window property check failed", exc_info=True)
+
+    def _is_face_visible(self, confs: list[float | None]) -> bool:
+        """Check if any facial keypoint confidence exceeds threshold."""
+        visible_idxs = (0, 1, 2, 3, 4)  # nose, eyes, ears
+        for idx in visible_idxs:
+            if idx >= len(confs):
+                continue
+            conf = confs[idx]
+            if conf is not None and conf >= self.face_conf_min:
+                return True
+        return False
+
+    def _fallback_face_down(self, keypoints) -> bool:
+        """Fallback for legacy keypoint structures when points parsing fails."""
+        try:
+            nose_y = keypoints.xy[0][1]
+            left_shoulder_y = keypoints.xy[5][1]
+            right_shoulder_y = keypoints.xy[6][1]
+        except Exception:
+            return False
+        shoulders_y_max = max(left_shoulder_y, right_shoulder_y)
+        return nose_y > shoulders_y_max + self.face_down_margin
+
+    def _process_pose_state(self, metrics: PoseMetrics) -> bool:
+        """Update state machine and trigger notifications/events as needed."""
+        if metrics.is_face_down:
+            self._no_face_count = 0
+            self._side_pose_count = 0
+            self.face_down_suspected_sent = False
+            if not self.face_down_sent:
+                message = "Rosto voltado para baixo"
+                if metrics.risk_score >= self._risk_threshold and not metrics.strong_face_down:
+                    message = f"Índice de risco alto ({metrics.risk_score:.2f})"
+                self._notify_all("Bebê de bruços", message, level="Urgente")
+                self._record_event(
+                    "face_down",
+                    confidence=1.0,
+                    level="Urgente",
+                    extra={
+                        "risk": metrics.risk_score,
+                        "angle_deg": metrics.angle_degrees,
+                        "head_y": metrics.head_y,
+                        "shoulders_y": metrics.shoulders_y,
+                    },
+                )
+                self.face_down_sent = True
+            logger.debug(
+                "Frame analyzed: face_visible=%s, face_down=%s, risk=%.2f, no_face_count=%d",
+                metrics.face_visible,
+                metrics.is_face_down,
+                metrics.risk_score,
+                self._no_face_count,
+            )
+            return True
+
+        side_threshold = max(1, self.no_face_frames_threshold // 2)
+        if metrics.is_side and not metrics.is_face_down:
+            self._side_pose_count += 1
+            if (
+                self._side_pose_count >= side_threshold
+                and not self.face_down_suspected_sent
+            ):
+                confidence = min(max(0.3 + 0.4 * metrics.risk_score, 0.0), 1.0)
+                level = "Importante" if confidence < 0.6 else "Crítico"
+                self._notify_all(
+                    "Posição suspeita",
+                    "Bebê de lado — monitorando possível virada",
+                    level=level,
+                )
+                self._record_event(
+                    "side_suspected",
+                    confidence=confidence,
+                    level=level,
+                    extra={"risk": metrics.risk_score},
+                )
+                self.face_down_suspected_sent = True
+                self._side_pose_count = 0
+        else:
+            self._side_pose_count = 0
+
+        if not metrics.face_visible:
+            self._no_face_count += 1
+            if (
+                self._no_face_count >= self.no_face_frames_threshold
+                and not self.face_down_suspected_sent
+            ):
+                self._notify_all(
+                    "Possível bebê de bruços",
+                    "Rosto não visível e posição suspeita",
+                    level="Importante",
+                )
+                self._record_event(
+                    "face_down_suspected",
+                    confidence=0.5,
+                    level="Importante",
+                    extra={"risk": metrics.risk_score},
+                )
+                self.face_down_suspected_sent = True
+        else:
+            self._no_face_count = 0
+            if not metrics.is_side:
+                self.face_down_suspected_sent = False
+
+        logger.debug(
+            "Frame analyzed: face_visible=%s, face_down=%s, risk=%.2f, no_face_count=%d",
+            metrics.face_visible,
+            metrics.is_face_down,
+            metrics.risk_score,
+            self._no_face_count,
+        )
+        return False
 
     def _extract_confidences(self, keypoints) -> list[float | None]:
         """Extract keypoint confidences as a flat list if available.
@@ -268,3 +496,94 @@ class PositionMonitor:
             return vals
         except Exception:
             return []
+
+    def _record_event(
+        self,
+        event_type: str,
+        *,
+        confidence: float,
+        level: str,
+        extra: dict | None = None,
+    ) -> None:
+        """Persist event with optional frame snapshot."""
+        if self.db is None:
+            return
+        payload = {"type": event_type, "confidence": confidence, "level": level}
+        if extra:
+            payload.update(extra)
+        if self._last_frame is not None:
+            try:
+                payload["image_bytes"] = encode_jpeg(self._last_frame)
+            except Exception:
+                logger.exception("Failed to encode frame to JPEG for event %s", event_type)
+        try:
+            self.db.save_event(payload)
+        except Exception:
+            logger.exception("Failed to record event: %s", event_type)
+
+    @property
+    def model(self) -> YOLO:
+        """Return the loaded pose model, loading lazily if needed."""
+        return self._get_model()
+
+    @model.setter
+    def model(self, value: YOLO | None) -> None:
+        self._model = value
+
+    @property
+    def face_down_sent(self) -> bool:
+        """Return whether a face-down alert has been dispatched."""
+        return self._has_face_down_alert
+
+    @face_down_sent.setter
+    def face_down_sent(self, value: bool) -> None:
+        self._has_face_down_alert = bool(value)
+
+    @property
+    def face_down_suspected_sent(self) -> bool:
+        """Return whether a suspected face-down alert has been dispatched."""
+        return self._has_face_down_suspected
+
+    @face_down_suspected_sent.setter
+    def face_down_suspected_sent(self, value: bool) -> None:
+        self._has_face_down_suspected = bool(value)
+
+    @staticmethod
+    def _safe_point(points: list[tuple[float, float]], idx: int):
+        try:
+            point = points[idx]
+            if len(point) >= 2:
+                return float(point[0]), float(point[1])
+        except Exception:
+            return None
+        return None
+
+    @staticmethod
+    def _mean(values: Iterable[float]) -> float | None:
+        seq = [float(v) for v in values if v is not None]
+        if not seq:
+            return None
+        return sum(seq) / len(seq)
+
+    def _update_nose_history(self, nose_y: float | None) -> float | None:
+        if nose_y is None:
+            return self._mean(self._nose_y_history)
+        self._nose_y_history.append(float(nose_y))
+        return self._mean(self._nose_y_history)
+
+    @staticmethod
+    def _compute_head_angle(nose, shoulder_center) -> float | None:
+        if nose is None or shoulder_center is None:
+            return None
+        p1 = nose
+        p2 = shoulder_center
+        p3 = (shoulder_center[0], shoulder_center[1] - 100.0)
+        v1 = (p1[0] - p2[0], p1[1] - p2[1])
+        v2 = (p3[0] - p2[0], p3[1] - p2[1])
+        mag1 = math.hypot(*v1)
+        mag2 = math.hypot(*v2)
+        if mag1 == 0 or mag2 == 0:
+            return None
+        dot = v1[0] * v2[0] + v1[1] * v2[1]
+        cos_theta = max(-1.0, min(1.0, dot / (mag1 * mag2)))
+        return math.degrees(math.acos(cos_theta))
