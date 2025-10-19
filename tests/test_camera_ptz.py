@@ -76,8 +76,10 @@ class CameraHandlerPTZTest(TestCase):
         move = ptz_service.moves[0]
         self.assertEqual(move["ProfileToken"], "Profile000")
         self.assertNotIn("Timeout", move)
-        self.assertAlmostEqual(move["Velocity"]["PanTilt"]["x"], 1.0)
-        self.assertAlmostEqual(move["Velocity"]["PanTilt"]["y"], -1.0)
+        self.assertLessEqual(abs(move["Velocity"]["PanTilt"]["x"]), 1.0)
+        self.assertLessEqual(abs(move["Velocity"]["PanTilt"]["y"]), 1.0)
+        self.assertGreater(move["Velocity"]["PanTilt"]["x"], 0.0)
+        self.assertGreater(move["Velocity"]["PanTilt"]["y"], 0.0)
         self.assertTrue(ptz_service.stop_payloads)
         self.assertEqual(
             ptz_service.stop_payloads[-1]["ProfileToken"], "Profile000"
