@@ -12,7 +12,7 @@ from threading import Thread, Event
 from queue import Queue, Empty, Full
 
 from fastapi import FastAPI, HTTPException, Response, Query, Path
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # Ensure project root is discoverable when executing as a script.
@@ -486,6 +486,44 @@ def register_token(data: dict):
     return {"status": "ok"}
 
 
+@app.get("/api/events/image")
+def get_event_image(image_path: str | None = Query(None), imagem_path: str | None = Query(None)):
+    """Retorna imagem codificada em Base64 usando caminho salvo."""
+    path_value = image_path or imagem_path
+    if not path_value:
+        raise HTTPException(400, "Parametro image_path e obrigatorio")
+    path = pathlib.Path(path_value)
+    if not path.is_absolute():
+        path = (PROJECT_ROOT / path).resolve()
+    else:
+        path = path.resolve()
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "Imagem nao encontrada")
+    try:
+        image_data = path.read_bytes()
+    except FileNotFoundError:
+        raise HTTPException(404, "Imagem nao encontrada")
+    except Exception as exc:
+        raise HTTPException(500, f"Erro ao ler imagem: {exc}") from exc
+    return {"image_b64": base64.b64encode(image_data).decode("ascii")}
+
+
+@app.get("/api/events/image/raw")
+def get_event_image_raw(image_path: str | None = Query(None), imagem_path: str | None = Query(None)):
+    """Retorna imagem como arquivo binario com content-type de imagem."""
+    path_value = image_path or imagem_path
+    if not path_value:
+        raise HTTPException(400, "Parametro image_path e obrigatorio")
+    path = pathlib.Path(path_value)
+    if not path.is_absolute():
+        path = (PROJECT_ROOT / path).resolve()
+    else:
+        path = path.resolve()
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "Imagem nao encontrada")
+    return FileResponse(path, media_type="image/jpeg")
+
+
 @app.get("/api/events")
 def get_all_events():
     """Retorna todos os eventos (mais recentes primeiro)."""
@@ -514,28 +552,6 @@ def get_events_noimg(offset: int = Path(..., ge=0), limit: int = Query(30, gt=0)
     def _strip(ev: dict) -> dict:
         return {k: v for k, v in ev.items() if k not in ("image_b64", "image_bytes")}
     return [_strip(e) for e in events]
-
-
-@app.get("/api/events/image")
-def get_event_image(image_path: str | None = Query(None), imagem_path: str | None = Query(None)):
-    """Retorna imagem codificada em Base64 usando caminho salvo."""
-    path_value = image_path or imagem_path
-    if not path_value:
-        raise HTTPException(400, "Parametro image_path e obrigatorio")
-    path = pathlib.Path(path_value)
-    if not path.is_absolute():
-        path = (PROJECT_ROOT / path).resolve()
-    else:
-        path = path.resolve()
-    if not path.exists() or not path.is_file():
-        raise HTTPException(404, "Imagem nao encontrada")
-    try:
-        image_data = path.read_bytes()
-    except FileNotFoundError:
-        raise HTTPException(404, "Imagem nao encontrada")
-    except Exception as exc:
-        raise HTTPException(500, f"Erro ao ler imagem: {exc}") from exc
-    return {"image_b64": base64.b64encode(image_data).decode("ascii")}
 
 
 @app.get("/api/latency")

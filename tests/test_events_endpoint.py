@@ -114,7 +114,7 @@ class TestEventsEndpoint(unittest.TestCase):
     def test_get_event_image_returns_base64(self):
         tmp_dir = Path('tests/_tmp_events_api')
         tmp_dir.mkdir(parents=True, exist_ok=True)
-        img_path = tmp_dir / 'event.jpg'
+        img_path = (tmp_dir / 'event.jpg').resolve()
         img_bytes = b'fake-bytes'
         img_path.write_bytes(img_bytes)
         try:
@@ -133,6 +133,32 @@ class TestEventsEndpoint(unittest.TestCase):
                 resp_alias = client.get('/api/events/image', params={'imagem_path': str(rel_path)})
                 self.assertEqual(resp_alias.status_code, 200)
                 self.assertEqual(resp_alias.json(), {'image_b64': expected_b64})
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_get_event_image_raw_returns_bytes(self):
+        tmp_dir = Path('tests/_tmp_events_api_raw')
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        img_path = (tmp_dir / 'event.jpg').resolve()
+        img_bytes = b'\xff\xd8\xff\xdb'  # minimal JPEG header example bytes
+        img_path.write_bytes(img_bytes)
+        try:
+            with patch.object(main.camera, 'start'), \
+                 patch.object(main.camera, 'stop'), \
+                 patch('src.main.Thread') as mock_thread, \
+                 patch.object(main, 'database'):
+                mock_thread.return_value.start.return_value = None
+                mock_thread.return_value.join.return_value = None
+                client = TestClient(main.app)
+                resp = client.get('/api/events/image/raw', params={'image_path': str(img_path)})
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.headers.get('content-type'), 'image/jpeg')
+                self.assertEqual(resp.content, img_bytes)
+                rel_path = img_path.relative_to(Path.cwd())
+                resp_alias = client.get('/api/events/image/raw', params={'imagem_path': str(rel_path)})
+                self.assertEqual(resp_alias.status_code, 200)
+                self.assertEqual(resp_alias.headers.get('content-type'), 'image/jpeg')
+                self.assertEqual(resp_alias.content, img_bytes)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
