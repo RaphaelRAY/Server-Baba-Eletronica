@@ -36,6 +36,42 @@ RIGHT_COLOR = (64, 192, 255)  # BGR - orange/teal
 CENTER_COLOR = (120, 255, 120)
 NEUTRAL_COLOR = (200, 200, 200)
 DRAW_CONF_THRESHOLD = 0.1
+LYING_VERTICAL_THRESHOLD = 40.0
+
+
+def check_prone_pose(
+    keypoints: dict[str, tuple[float, float]],
+    *,
+    lying_threshold: float = LYING_VERTICAL_THRESHOLD,
+    min_horizontal_gap: float = 15.0,
+) -> tuple[str, str]:
+    """Avalia orientação (bruços ou frente) e postura (deitado ou em pé)."""
+    rs = keypoints["right_shoulder"]
+    ls = keypoints["left_shoulder"]
+    rh = keypoints["right_hip"]
+    lh = keypoints["left_hip"]
+
+    shoulders_gap = abs(rs[0] - ls[0])
+    hips_gap = abs(rh[0] - lh[0])
+    if (
+        rs[0] > ls[0]
+        and rh[0] > lh[0]
+        and shoulders_gap >= min_horizontal_gap
+        and hips_gap >= min_horizontal_gap
+    ):
+        facing = "De bruços (orientação invertida)"
+
+    else:
+        facing = "De costas para câmera"
+
+
+    vertical_diff = abs(rs[1] - rh[1])
+    if vertical_diff < lying_threshold:
+        posture = "Deitado"
+    else:
+        posture = "Em pé"
+
+    return facing, posture
 
 
 @dataclass
@@ -47,6 +83,9 @@ class PoseMetrics:
     is_face_down: bool
     is_side: bool
     orientation_inverted: bool
+    is_lying_down: bool
+    facing_label: str | None
+    posture_label: str | None
     risk_score: float
     angle_degrees: float | None
     nose_y_avg: float | None
@@ -93,7 +132,6 @@ class PositionMonitor:
         self._has_face_down_suspected = False
         self._no_face_count = 0
         self._side_pose_count = 0
-        self._orientation_history: deque[float] = deque(maxlen=5)
         self._lateral_history: deque[float] = deque(maxlen=5)
         self._last_frame = None
         self._pose_window_initialized = False
@@ -185,26 +223,29 @@ class PositionMonitor:
         shoulder_span = None
         orientation_inverted = False
         side_aligned = False
+        is_lying_down = False
+        facing_label = None
+        posture_label = None
         if left_shoulder and right_shoulder:
             shoulder_center = (
                 (left_shoulder[0] + right_shoulder[0]) / 2,
                 shoulders_y,
             )
             shoulder_span = abs(left_shoulder[0] - right_shoulder[0])
-            diff_x = left_shoulder[0] - right_shoulder[0]
-            self._orientation_history.append(diff_x)
-            smooth_diff_x = sum(self._orientation_history) / len(self._orientation_history)
-            abs_diff = abs(smooth_diff_x)
-            if smooth_diff_x > 30:
-                orientation_inverted = True
-            elif abs_diff < 25:
+            if shoulder_span < 25:
                 side_aligned = True
 
         if left_shoulder and right_shoulder and left_hip and right_hip:
-            inverted_upper = left_shoulder[0] > right_shoulder[0]
-            inverted_lower = left_hip[0] > right_hip[0]
-            if inverted_upper and inverted_lower:
-                orientation_inverted = True
+            facing_label, posture_label = check_prone_pose(
+                {
+                    "right_shoulder": right_shoulder,
+                    "left_shoulder": left_shoulder,
+                    "right_hip": right_hip,
+                    "left_hip": left_hip,
+                }
+            )
+            orientation_inverted = facing_label == "De bruços"
+            is_lying_down = posture_label == "Deitado"
 
         head_components = [
             candidate[1]
@@ -220,7 +261,6 @@ class PositionMonitor:
         strong_face_down = False
         if shoulders_y is not None and reference_y is not None:
             strong_face_down = reference_y > shoulders_y + self.face_down_margin
-
         fallback_face_down = False
         if not strong_face_down:
             fallback_face_down = self._fallback_face_down(keypoints)
@@ -287,6 +327,9 @@ class PositionMonitor:
             is_face_down=is_face_down,
             is_side=is_side,
             orientation_inverted=orientation_inverted,
+            is_lying_down=is_lying_down,
+            facing_label=facing_label,
+            posture_label=posture_label,
             risk_score=risk_score,
             angle_degrees=angle,
             nose_y_avg=nose_y_avg,
@@ -551,7 +594,7 @@ class PositionMonitor:
                     level="Importante",
                 )
                 self._record_event(
-                    "side_suspected",
+                    "face_down_possible",
                     confidence=0.3,
                     level="Importante",
                     extra={"risk": metrics.risk_score},

@@ -241,19 +241,19 @@ class TestPositionMonitor(unittest.TestCase):
         )
 
         points = [
-            (35, 30),  # nose aligned with shoulder center
-            (35, 29),
-            (35, 29),
-            (35, 28),
-            (35, 28),
-            (60, 20),   # left_shoulder significantly to the right
-            (10, 20),   # right_shoulder
+            (35, 50),  # nose bem abaixo dos ombros
+            (35, 48),
+            (35, 48),
+            (35, 47),
+            (35, 47),
+            (10, 20),   # left_shoulder
+            (60, 20),   # right_shoulder
             (0, 0),
             (0, 0),
             (0, 0),
             (0, 0),
-            (65, 40),   # left_hip also to the right
-            (15, 40),   # right_hip
+            (15, 40),   # left_hip
+            (65, 40),   # right_hip
         ]
         confs = [0.9] * len(points)
         keypoints = SimpleNamespace(xy=points, conf=confs)
@@ -282,14 +282,14 @@ class TestPositionMonitor(unittest.TestCase):
             (35, 22),
             (35, 21),
             (35, 21),
-            (60, 20),   # left_shoulder to the right
-            (10, 20),   # right_shoulder
+            (10, 20),   # left_shoulder
+            (60, 20),   # right_shoulder
             (0, 0),
             (0, 0),
             (0, 0),
             (0, 0),
-            (65, 40),
             (15, 40),
+            (65, 40),
         ]
         confs = [0.9] * len(points)
         keypoints = SimpleNamespace(xy=points, conf=confs)
@@ -318,14 +318,14 @@ class TestPositionMonitor(unittest.TestCase):
             (35, 22),
             (35, 21),
             (35, 21),
-            (60, 20),
             (10, 20),
+            (60, 20),
             (0, 0),
             (0, 0),
             (0, 0),
             (0, 0),
-            (65, 40),
             (15, 40),
+            (65, 40),
         ]
         confs = [0.05] * 5 + [0.9] * (len(points) - 5)
         keypoints = SimpleNamespace(xy=points, conf=confs)
