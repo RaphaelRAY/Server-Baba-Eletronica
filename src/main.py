@@ -100,12 +100,22 @@ presence_monitor = PresenceMonitor(
 # Pose detection thresholds (optional configuration)
 pose_face_conf = float(os.getenv("POSE_FACE_CONF_MIN", "0.3"))
 pose_no_face_frames = int(os.getenv("POSE_NO_FACE_FRAMES", "12"))
+try:
+    pose_risk_threshold = float(os.getenv("POSE_RISK_THRESHOLD", "0.7"))
+except Exception:
+    pose_risk_threshold = 0.7
+try:
+    pose_orientation_margin = float(os.getenv("POSE_ORIENTATION_MARGIN_RATIO", "0.5"))
+except Exception:
+    pose_orientation_margin = 0.5
 position_monitor = PositionMonitor(
     notifier,
     token_registry,
     database,
     face_conf_min=pose_face_conf,
     no_face_frames_threshold=pose_no_face_frames,
+    risk_threshold=pose_risk_threshold,
+    orientation_margin_ratio=pose_orientation_margin,
     )
 
 # Tolerate missing Firebase setup so app keeps running

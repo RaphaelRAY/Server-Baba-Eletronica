@@ -18,6 +18,25 @@ from src.notifications.token_registry import TokenRegistry
 from src.db import Database
 from src.utils.image_utils import encode_jpeg
 
+LEFT_KP_INDICES = {5, 7, 9, 11, 13, 15}
+RIGHT_KP_INDICES = {6, 8, 10, 12, 14, 16}
+CENTER_KP_INDICES = {0, 1, 2, 3, 4}
+TORSO_KP_INDICES = {5, 6, 11, 12}
+LIMB_SEGMENTS = [
+    (5, 7), (7, 9),  # left arm
+    (6, 8), (8, 10),  # right arm
+    (11, 13), (13, 15),  # left leg
+    (12, 14), (14, 16),  # right leg
+    (5, 6),  # shoulders
+    (11, 12),  # hips
+    (5, 11), (6, 12),  # torso connections
+]
+LEFT_COLOR = (255, 128, 64)  # BGR - blue-ish/orange-ish
+RIGHT_COLOR = (64, 192, 255)  # BGR - orange/teal
+CENTER_COLOR = (120, 255, 120)
+NEUTRAL_COLOR = (200, 200, 200)
+DRAW_CONF_THRESHOLD = 0.1
+
 
 @dataclass
 class PoseMetrics:
@@ -45,7 +64,7 @@ class PositionMonitor:
         db: Database | None = None,
         *,
         model: YOLO | None = None,
-        model_path: str = "yolo11l-pose.pt",
+        model_path: str = "yolo11x-pose.pt",
         model_conf: float = 0.25,
         model_iou: float = 0.5,
         face_down_margin: float = 20.0,
@@ -54,6 +73,7 @@ class PositionMonitor:
         smoothing_window: int = 5,
         side_offset_ratio: float = 0.3,
         risk_threshold: float = 0.7,
+        orientation_margin_ratio: float = 0.5,
     ):
         """Store dependencies and pose parameters."""
         self.notifier = notifier
@@ -68,6 +88,7 @@ class PositionMonitor:
         self.no_face_frames_threshold = int(no_face_frames_threshold)
         self._risk_threshold = float(risk_threshold)
         self._side_offset_ratio = float(side_offset_ratio)
+        self._orientation_margin_ratio = max(0.0, float(orientation_margin_ratio))
         self._has_face_down_alert = False
         self._has_face_down_suspected = False
         self._no_face_count = 0
@@ -98,6 +119,7 @@ class PositionMonitor:
     def handle_pose(self, results: List) -> None:
         """Handle pose results and notify if face down."""
         alert_triggered = False
+        handled_pose = False
         for result in results or []:
             keypoints = getattr(result, "keypoints", None)
             if keypoints is None:
@@ -115,10 +137,11 @@ class PositionMonitor:
 
             confs = self._extract_confidences(keypoints)
             metrics = self._compute_pose_metrics(points, confs, keypoints)
+            handled_pose = True
             alert_triggered = self._process_pose_state(metrics)
             if alert_triggered:
                 return
-        if not alert_triggered:
+        if not alert_triggered and handled_pose:
             self.face_down_sent = False
 
     def _preprocess_frame(self, frame):
@@ -126,9 +149,11 @@ class PositionMonitor:
         if frame is None:
             return frame
         try:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            eq = cv2.equalizeHist(gray)
-            return cv2.cvtColor(eq, cv2.COLOR_GRAY2BGR)
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            h, s, v = cv2.split(hsv)
+            v_eq = cv2.equalizeHist(v)
+            hsv_eq = cv2.merge((h, s, v_eq))
+            return cv2.cvtColor(hsv_eq, cv2.COLOR_HSV2BGR)
         except Exception:
             logger.debug("Frame preprocessing skipped", exc_info=True)
             return frame
@@ -195,8 +220,6 @@ class PositionMonitor:
         strong_face_down = False
         if shoulders_y is not None and reference_y is not None:
             strong_face_down = reference_y > shoulders_y + self.face_down_margin
-        if orientation_inverted:
-            strong_face_down = True
 
         fallback_face_down = False
         if not strong_face_down:
@@ -226,6 +249,16 @@ class PositionMonitor:
         angle = self._compute_head_angle(nose, shoulder_center)
 
         face_visible = self._is_face_visible(confs)
+        orientation_risky = False
+        margin_delta = self.face_down_margin * self._orientation_margin_ratio
+        if orientation_inverted:
+            if not face_visible:
+                orientation_risky = True
+            elif shoulders_y is not None and reference_y is not None:
+                orientation_risky = reference_y > shoulders_y + margin_delta
+        if orientation_risky and not strong_face_down and shoulders_y is not None and reference_y is not None:
+            strong_face_down = reference_y > shoulders_y + margin_delta
+
         face_conf_vals = [c for c in confs[:5] if c is not None]
         face_conf_avg = sum(face_conf_vals) / len(face_conf_vals) if face_conf_vals else 0.0
 
@@ -240,7 +273,7 @@ class PositionMonitor:
         risk_score = (
             0.15 * distance_component
             + 0.45 * conf_component
-            + 0.4 * (1.0 if orientation_inverted else angle_component)
+            + 0.4 * (1.0 if orientation_risky else angle_component)
         )
         if is_side and not orientation_inverted:
             risk_score += 0.1
@@ -321,11 +354,23 @@ class PositionMonitor:
             except Exception:
                 cv2.namedWindow(self._pose_window_name, cv2.WINDOW_NORMAL)
             self._pose_window_initialized = True
-        try:
-            render = results[0].plot() if results else frame
-        except Exception:
-            logger.exception("Failed to render pose frame")
-            render = frame
+        render = frame.copy() if hasattr(frame, "copy") else frame
+        drew_overlay = False
+        for result in results or []:
+            keypoints = getattr(result, "keypoints", None)
+            if keypoints is None:
+                continue
+            points = self._extract_xy_points(keypoints)
+            if not points:
+                continue
+            confs = self._extract_confidences(keypoints)
+            drew_overlay = self._draw_pose_overlay(render, points, confs) or drew_overlay
+        if not drew_overlay:
+            try:
+                render = results[0].plot() if results else render
+            except Exception:
+                logger.exception("Failed to render pose frame")
+                render = render if render is not None else frame
         if render is None:
             render = frame
         cv2.imshow(self._pose_window_name, render)
@@ -339,6 +384,84 @@ class PositionMonitor:
                     self._pose_window_initialized = False
         except Exception:
             logger.debug("Pose window property check failed", exc_info=True)
+
+    def _draw_pose_overlay(
+        self,
+        image,
+        points: list[tuple[float, float]],
+        confs: list[float | None],
+    ) -> bool:
+        """Draw colored skeleton overlay differentiating left/right limbs."""
+        if image is None:
+            return False
+        drawn = False
+
+        def _valid(idx: int) -> bool:
+            if idx >= len(points):
+                return False
+            conf = confs[idx] if idx < len(confs) else None
+            if conf is not None and conf < DRAW_CONF_THRESHOLD:
+                return False
+            return True
+
+        def _pt(idx: int) -> tuple[int, int]:
+            x, y = points[idx]
+            return int(round(float(x))), int(round(float(y)))
+
+        for idx in range(len(points)):
+            if not _valid(idx):
+                continue
+            color = self._keypoint_color(idx)
+            try:
+                cv2.circle(
+                    image,
+                    _pt(idx),
+                    4,
+                    color,
+                    thickness=-1,
+                    lineType=getattr(cv2, "LINE_AA", 16),
+                )
+                drawn = True
+            except Exception:
+                logger.debug("Failed to draw keypoint %s", idx, exc_info=True)
+
+        for start, end in LIMB_SEGMENTS:
+            if not (_valid(start) and _valid(end)):
+                continue
+            color = self._segment_color(start, end)
+            try:
+                cv2.line(
+                    image,
+                    _pt(start),
+                    _pt(end),
+                    color,
+                    thickness=2,
+                    lineType=getattr(cv2, "LINE_AA", 16),
+                )
+                drawn = True
+            except Exception:
+                logger.debug("Failed to draw limb %s-%s", start, end, exc_info=True)
+        return drawn
+
+    def _keypoint_color(self, idx: int) -> tuple[int, int, int]:
+        if idx in LEFT_KP_INDICES:
+            return LEFT_COLOR
+        if idx in RIGHT_KP_INDICES:
+            return RIGHT_COLOR
+        if idx in CENTER_KP_INDICES:
+            return CENTER_COLOR
+        return NEUTRAL_COLOR
+
+    def _segment_color(self, start: int, end: int) -> tuple[int, int, int]:
+        if start in LEFT_KP_INDICES and end in LEFT_KP_INDICES:
+            return LEFT_COLOR
+        if start in RIGHT_KP_INDICES and end in RIGHT_KP_INDICES:
+            return RIGHT_COLOR
+        if {start, end} <= TORSO_KP_INDICES or (
+            start in CENTER_KP_INDICES or end in CENTER_KP_INDICES
+        ):
+            return CENTER_COLOR
+        return NEUTRAL_COLOR
 
     def _is_face_visible(self, confs: list[float | None]) -> bool:
         """Check if any facial keypoint confidence exceeds threshold."""
@@ -367,24 +490,45 @@ class PositionMonitor:
         if metrics.is_face_down:
             self._no_face_count = 0
             self._side_pose_count = 0
-            self.face_down_suspected_sent = False
-            if not self.face_down_sent:
-                message = "Rosto voltado para baixo"
-                if metrics.risk_score >= self._risk_threshold and not metrics.strong_face_down:
-                    message = f"Índice de risco alto ({metrics.risk_score:.2f})"
-                self._notify_all("Bebê de bruços", message, level="Urgente")
-                self._record_event(
-                    "face_down",
-                    confidence=1.0,
-                    level="Urgente",
-                    extra={
-                        "risk": metrics.risk_score,
-                        "angle_deg": metrics.angle_degrees,
-                        "head_y": metrics.head_y,
-                        "shoulders_y": metrics.shoulders_y,
-                    },
-                )
-                self.face_down_sent = True
+            if metrics.strong_face_down:
+                self.face_down_suspected_sent = False
+                if not self.face_down_sent:
+                    message = "Rosto voltado para baixo"
+                    if metrics.risk_score >= self._risk_threshold and not metrics.strong_face_down:
+                        message = f"Indice de risco alto ({metrics.risk_score:.2f})"
+                    self._notify_all("Bebe de brucos", message, level="Urgente")
+                    self._record_event(
+                        "face_down",
+                        confidence=1.0,
+                        level="Urgente",
+                        extra={
+                            "risk": metrics.risk_score,
+                            "angle_deg": metrics.angle_degrees,
+                            "head_y": metrics.head_y,
+                            "shoulders_y": metrics.shoulders_y,
+                        },
+                    )
+                    self.face_down_sent = True
+            else:
+                self.face_down_sent = False
+                if not self.face_down_suspected_sent:
+                    message = f"Indice de risco alto ({metrics.risk_score:.2f})"
+                    self._notify_all(
+                        "Posicao suspeita",
+                        message,
+                        level="Importante",
+                    )
+                    self._record_event(
+                        "face_down_suspected",
+                        confidence=max(0.0, metrics.risk_score),
+                        level="Importante",
+                        extra={
+                            "angle_deg": metrics.angle_degrees,
+                            "head_y": metrics.head_y,
+                            "shoulders_y": metrics.shoulders_y,
+                        },
+                    )
+                    self.face_down_suspected_sent = True
             logger.debug(
                 "Frame analyzed: face_visible=%s, face_down=%s, risk=%.2f, no_face_count=%d",
                 metrics.face_visible,

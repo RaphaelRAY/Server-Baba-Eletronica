@@ -172,3 +172,4 @@ push-test-15206-firebase-adminsdk-fbsvc-9136518ebe.json
 *.json
 yolo11l-pose.pt
 yolo11l.pt
+yolo11x-pose.pt
