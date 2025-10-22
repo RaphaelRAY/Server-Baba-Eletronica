@@ -611,6 +611,7 @@ class CameraHandler:
         payload = {"ProfileToken": profile_token, "PresetToken": str(preset)}
         try:
             with self._ptz_lock:
+                logging.info("PTZ goto preset %s", preset)
                 mover(payload)
             return True
         except Exception:
@@ -717,12 +718,31 @@ class CameraHandler:
                     if self._stop.is_set():
                         return
 
+            move_duration = max(0.0, min(self._ptz_move_duration, self._ptz_timeout))
+            pan_velocity = vx
+            tilt_velocity = -vy
+            directions = []
+            if pan_velocity > 0:
+                directions.append("pan direita")
+            elif pan_velocity < 0:
+                directions.append("pan esquerda")
+            if tilt_velocity > 0:
+                directions.append("tilt cima")
+            elif tilt_velocity < 0:
+                directions.append("tilt baixo")
+            direction_label = " + ".join(directions) if directions else "sem deslocamento"
+            logging.info(
+                "PTZ comando %s (pan=%.3f, tilt=%.3f, duracao=%.2fs)",
+                direction_label,
+                pan_velocity,
+                tilt_velocity,
+                move_duration,
+            )
+
             payload = {
                 "ProfileToken": self._ptz_profile_token,
-                "Velocity": {"PanTilt": {"x": vx, "y": -vy}},
+                "Velocity": {"PanTilt": {"x": pan_velocity, "y": tilt_velocity}},
             }
-
-            move_duration = max(0.0, min(self._ptz_move_duration, self._ptz_timeout))
 
             self._ptz_failures = getattr(self, "_ptz_failures", 0)
             try:
