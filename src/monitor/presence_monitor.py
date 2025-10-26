@@ -72,6 +72,7 @@ class PresenceMonitor:
                     self.db.save_event(payload)
                 except Exception:
                     pass
+                self._notify_all("Camera reconectada", "A camera voltou a enviar frames", level="Info")
             self.camera_sent = False
             # Update last valid frame time and cache
             self.last_frame_ts = now
