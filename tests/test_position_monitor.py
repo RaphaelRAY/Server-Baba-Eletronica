@@ -1,6 +1,11 @@
 import unittest
 from unittest.mock import MagicMock, patch, call
 
+try:
+    import torch
+except ImportError:  # pragma: no cover - torch is optional in tests
+    torch = None
+
 from src.monitor.position_monitor import PositionMonitor, LEFT_COLOR, RIGHT_COLOR
 
 
@@ -44,6 +49,29 @@ class TestPositionMonitor(unittest.TestCase):
         monitor.handle_pose([safe])
         monitor.handle_pose([face_down])
         self.assertEqual(notifier.notify.call_count, 2)
+
+    @unittest.skipIf(torch is None, "torch not installed")
+    def test_fallback_face_down_handles_batched_tensor(self):
+        from types import SimpleNamespace
+
+        notifier = MagicMock()
+        registry = MagicMock()
+        monitor = PositionMonitor(
+            notifier,
+            registry,
+            model=MagicMock(),
+            face_down_margin=5.0,
+        )
+
+        xy = torch.zeros((1, 17, 2), dtype=torch.float32)
+        xy[0, 0, 1] = 30.0  # nose y
+        xy[0, 5, 1] = 10.0  # left shoulder y
+        xy[0, 6, 1] = 12.0  # right shoulder y
+        xy[0, 5, 0] = -40.0
+        xy[0, 6, 0] = 40.0
+        keypoints = SimpleNamespace(xy=xy)
+
+        self.assertTrue(monitor._fallback_face_down([], keypoints))
 
     @patch("src.monitor.position_monitor.cv2")
     def test_pose_window_resizable(self, cv2_mock):

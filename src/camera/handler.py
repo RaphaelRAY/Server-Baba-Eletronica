@@ -212,6 +212,7 @@ class CameraHandler:
         self._filtered_err_x: float = 0.0
         self._filtered_err_y: float = 0.0
         self._ptz_failures: int = 0
+        self._ptz_inflight: bool = False
 
     def _sleep_interruptible(self, seconds: float, step: float = 0.1) -> None:
         """Sleep in small steps so stop() can interrupt long waits."""
@@ -656,15 +657,19 @@ class CameraHandler:
         """Define se o modo top-down (reduz tilt) está ativo."""
         self._topdown_mode = bool(enabled)
 
-    def control_ptz(self, err_x: float, err_y: float, kp: float = 0.8) -> None:
+    def control_ptz(self, err_x: float, err_y: float, kp: float = 1.5) -> None:
         if not self.ptz_enabled or self._camera is None:
             return
         if not self._ptz_profile_token or not self._ptz_service:
             self._refresh_ptz_state()
         if not self._ptz_service or not self._ptz_profile_token:
             return
+        if self._ptz_inflight:
+            return
 
         with self._ptz_lock:
+            if self._ptz_inflight:
+                return
             # Suavização exponencial das componentes de erro
             alpha = 0.3
             self._filtered_err_x = alpha * err_x + (1 - alpha) * self._filtered_err_x
@@ -743,13 +748,17 @@ class CameraHandler:
                 "ProfileToken": self._ptz_profile_token,
                 "Velocity": {"PanTilt": {"x": pan_velocity, "y": tilt_velocity}},
             }
+            stop_payload = {"ProfileToken": self._ptz_profile_token}
 
             self._ptz_failures = getattr(self, "_ptz_failures", 0)
+            self._ptz_inflight = True
             try:
-                self._ptz_service.ContinuousMove(payload)
+                move_response = self._ptz_service.ContinuousMove(payload)
+                logging.info("PTZ resposta move: %s", move_response)
                 if move_duration > 0:
                     self._sleep_interruptible(move_duration)
-                self._ptz_service.Stop({"ProfileToken": self._ptz_profile_token})
+                stop_response = self._ptz_service.Stop(stop_payload)
+                logging.info("PTZ resposta stop: %s", stop_response)
                 self._ptz_failures = 0
             except Exception as exc:
                 self._ptz_failures += 1
@@ -758,6 +767,7 @@ class CameraHandler:
                     self._refresh_ptz_state()
             finally:
                 self._ptz_last_command_ts = time.monotonic()
+                self._ptz_inflight = False
 
 
     def stop(self) -> None:

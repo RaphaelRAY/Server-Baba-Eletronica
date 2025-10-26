@@ -263,7 +263,7 @@ class PositionMonitor:
             strong_face_down = reference_y > shoulders_y + self.face_down_margin
         fallback_face_down = False
         if not strong_face_down:
-            fallback_face_down = self._fallback_face_down(keypoints)
+            fallback_face_down = self._fallback_face_down(points, keypoints)
             strong_face_down = fallback_face_down
 
         is_side = side_aligned
@@ -517,16 +517,56 @@ class PositionMonitor:
                 return True
         return False
 
-    def _fallback_face_down(self, keypoints) -> bool:
+    def _fallback_face_down(
+        self,
+        points: list[tuple[float, float]],
+        keypoints,
+    ) -> bool:
         """Fallback for legacy keypoint structures when points parsing fails."""
-        try:
-            nose_y = keypoints.xy[0][1]
-            left_shoulder_y = keypoints.xy[5][1]
-            right_shoulder_y = keypoints.xy[6][1]
-        except Exception:
+        nose = self._safe_point(points, 0) if points else None
+        left_shoulder = self._safe_point(points, 5) if points else None
+        right_shoulder = self._safe_point(points, 6) if points else None
+        if nose and left_shoulder and right_shoulder:
+            shoulders_y_max = max(left_shoulder[1], right_shoulder[1])
+            return nose[1] > shoulders_y_max + self.face_down_margin
+
+        xy = getattr(keypoints, "xy", None)
+        if xy is None:
             return False
-        shoulders_y_max = max(left_shoulder_y, right_shoulder_y)
-        return nose_y > shoulders_y_max + self.face_down_margin
+
+        data = xy
+        try:
+            # Reduce to a [K, 2] structure by taking the first detection if necessary.
+            while hasattr(data, "__len__") and len(data) and hasattr(data[0], "__len__"):
+                candidate = data[0]
+                if hasattr(candidate, "__len__") and len(candidate) >= 2:
+                    first_value = candidate[0]
+                    if not hasattr(first_value, "__len__"):
+                        break
+                data = candidate
+
+            def _coord_y(idx: int) -> float | None:
+                try:
+                    entry = data[idx]
+                    if not hasattr(entry, "__len__") or len(entry) < 2:
+                        return None
+                    value = entry[1]
+                    if hasattr(value, "item"):
+                        value = value.item()
+                    return float(value)
+                except Exception:
+                    return None
+
+            nose_y = _coord_y(0)
+            left_shoulder_y = _coord_y(5)
+            right_shoulder_y = _coord_y(6)
+            if None in (nose_y, left_shoulder_y, right_shoulder_y):
+                return False
+            shoulders_y_max = max(left_shoulder_y, right_shoulder_y)
+            return nose_y > shoulders_y_max + self.face_down_margin
+        except Exception:
+            logger.debug("Fallback face-down check failed", exc_info=True)
+            return False
 
     def _process_pose_state(self, metrics: PoseMetrics) -> bool:
         """Update state machine and trigger notifications/events as needed."""

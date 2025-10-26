@@ -4,9 +4,19 @@ import logging
 import os
 
 try:
+    import firebase_admin  # type: ignore
+except Exception:  # firebase-admin not installed
+    firebase_admin = None  # type: ignore
+
+try:
     from firebase_admin import messaging  # type: ignore
 except Exception:  # firebase not available/initialized
     messaging = None  # type: ignore
+
+try:
+    from src.firebase_setup import FirebaseSetup
+except Exception:  # defer initialization if module unavailable
+    FirebaseSetup = None  # type: ignore
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -44,6 +54,13 @@ class Notifier:
             )
             return
 
+        if not self._ensure_firebase_initialized():
+            logging.warning(
+                "Firebase app not initialized; dropping notification to token %s",
+                token,
+            )
+            return
+
         try:
             msg = messaging.Message(
                 token=token,
@@ -69,3 +86,29 @@ class Notifier:
                 token,
                 exc,
             )
+
+    @staticmethod
+    def _ensure_firebase_initialized() -> bool:
+        """Ensure a Firebase app exists before sending messages."""
+        if firebase_admin is None:
+            return False
+
+        try:
+            firebase_admin.get_app()  # type: ignore[attr-defined]
+            return True
+        except ValueError:
+            pass  # No default app yet.
+        except Exception as exc:  # pragma: no cover - unexpected failure
+            logging.debug("Unexpected Firebase get_app failure: %s", exc, exc_info=True)
+            return False
+
+        if FirebaseSetup is None:
+            logging.debug("FirebaseSetup helper unavailable; cannot initialize Firebase")
+            return False
+
+        try:
+            FirebaseSetup().init_firebase(raise_if_missing=False)
+            return True
+        except Exception as exc:
+            logging.warning("Firebase initialization failed: %s", exc)
+            return False
