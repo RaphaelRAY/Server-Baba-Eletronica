@@ -98,25 +98,34 @@ presence_monitor = PresenceMonitor(
     camera_miss_threshold=cam_disc_misses,
 )
 # Pose detection thresholds (optional configuration)
-pose_face_conf = float(os.getenv("POSE_FACE_CONF_MIN", "0.3"))
 pose_no_face_frames = int(os.getenv("POSE_NO_FACE_FRAMES", "12"))
+posture_model_path = os.getenv("POSTURE_MODEL_PATH", "clsModel.pt")
 try:
-    pose_risk_threshold = float(os.getenv("POSE_RISK_THRESHOLD", "0.7"))
+    posture_conf_min = float(
+        os.getenv("POSTURE_CONF_MIN", os.getenv("POSE_FACE_CONF_MIN", "0.35"))
+    )
 except Exception:
-    pose_risk_threshold = 0.7
+    posture_conf_min = 0.35
 try:
-    pose_orientation_margin = float(os.getenv("POSE_ORIENTATION_MARGIN_RATIO", "0.5"))
+    posture_stable_frames = int(os.getenv("POSTURE_STABLE_FRAMES", "2"))
 except Exception:
-    pose_orientation_margin = 0.5
+    posture_stable_frames = 2
+try:
+    posture_imgsz = int(os.getenv("POSTURE_IMGSZ", "224"))
+except Exception:
+    posture_imgsz = 224
+posture_device = os.getenv("POSTURE_DEVICE")
 position_monitor = PositionMonitor(
     notifier,
     token_registry,
     database,
-    face_conf_min=pose_face_conf,
     no_face_frames_threshold=pose_no_face_frames,
-    risk_threshold=pose_risk_threshold,
-    orientation_margin_ratio=pose_orientation_margin,
-    )
+    model_path=posture_model_path,
+    min_confidence=posture_conf_min,
+    stable_frames=posture_stable_frames,
+    imgsz=posture_imgsz,
+    device=posture_device,
+)
 
 # Tolerate missing Firebase setup so app keeps running
 try:
@@ -240,7 +249,7 @@ def _enqueue_frame(queue_obj: Queue, frame):
 
 
 def pose_loop():
-    """Processa frames dedicados à análise de pose."""
+    """Processa frames dedicados à análise de postura via classificação."""
     while not t_processing_stop.is_set():
         try:
             frame = pose_queue.get(timeout=0.1)
@@ -378,7 +387,7 @@ def get_snapshot():
 
 @app.get("/api/pose-snapshot", response_class=Response)
 def get_pose_snapshot():
-    """Retorna snapshot com overlay da análise de pose (YOLO Pose)."""
+    """Retorna snapshot com overlay da classificação de postura."""
     frame = camera.get_frame()
     if frame is None:
         raise HTTPException(503, "Sem frame disponível")

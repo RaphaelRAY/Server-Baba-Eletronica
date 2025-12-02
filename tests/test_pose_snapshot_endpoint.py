@@ -27,7 +27,7 @@ class TestPoseSnapshotEndpoint(unittest.TestCase):
              patch.object(main.camera, 'stop'), \
              patch('src.main.Thread') as mock_thread, \
              patch.object(main.camera, 'get_frame') as mock_get_frame, \
-             patch.object(main.position_monitor, 'model') as mock_model, \
+             patch.object(main.position_monitor, '_get_model') as mock_get_model, \
              patch('src.main.encode_jpeg') as mock_encode:
             mock_thread.return_value.start.return_value = None
             mock_thread.return_value.join.return_value = None
@@ -38,7 +38,9 @@ class TestPoseSnapshotEndpoint(unittest.TestCase):
             # Fake YOLO pose result
             res = MagicMock()
             res.plot.return_value = 'overlay'
-            mock_model.return_value = [res]
+            fake_model = MagicMock()
+            fake_model.return_value = [res]
+            mock_get_model.return_value = fake_model
 
             # Fake JPEG encoder
             mock_encode.return_value = b'JPEGDATA'
