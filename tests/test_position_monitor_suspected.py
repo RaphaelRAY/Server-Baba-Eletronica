@@ -27,6 +27,7 @@ class TestPositionMonitorSuspected(unittest.TestCase):
             model=model,
             stable_frames=1,
             min_confidence=0.1,
+            analysis_cooldown_secs=0,
         )
         model.return_value = [
             SimpleNamespace(probs=SimpleNamespace(top1=1, top1conf=0.9))

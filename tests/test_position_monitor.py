@@ -24,6 +24,7 @@ class TestPositionMonitor(unittest.TestCase):
             registry,
             Database(server=Database.SERVER_MEMORY),
             model=model,
+            analysis_cooldown_secs=0,
             **kwargs,
         )
         return monitor, notifier, registry, model

@@ -114,6 +114,10 @@ try:
     posture_imgsz = int(os.getenv("POSTURE_IMGSZ", "224"))
 except Exception:
     posture_imgsz = 224
+try:
+    posture_cooldown = float(os.getenv("POSTURE_ANALYSIS_COOLDOWN", "5"))
+except Exception:
+    posture_cooldown = 5.0
 posture_device = os.getenv("POSTURE_DEVICE")
 position_monitor = PositionMonitor(
     notifier,
@@ -125,6 +129,7 @@ position_monitor = PositionMonitor(
     stable_frames=posture_stable_frames,
     imgsz=posture_imgsz,
     device=posture_device,
+    analysis_cooldown_secs=posture_cooldown,
 )
 
 # Tolerate missing Firebase setup so app keeps running

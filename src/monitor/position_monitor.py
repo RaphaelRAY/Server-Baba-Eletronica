@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import pathlib
+import time
 from typing import List
 
 import cv2
@@ -60,6 +61,7 @@ class PositionMonitor:
         stable_frames: int = 2,
         imgsz: int = 224,
         device: str | None = None,
+        analysis_cooldown_secs: float = 5.0,
     ):
         """Configure monitor with notifier, registry and classification params."""
         self.notifier = notifier
@@ -73,11 +75,13 @@ class PositionMonitor:
         self._device = device or self._auto_device()
         self._min_confidence = float(min_confidence)
         self._stable_frames = max(1, int(stable_frames))
+        self._analysis_cooldown = max(0.0, float(analysis_cooldown_secs))
         self.no_face_frames_threshold = int(no_face_frames_threshold)
         self._absent_threshold = max(1, self.no_face_frames_threshold)
         self._pose_window_initialized = False
         self._pose_window_name = "Pose"
         self._last_frame = None
+        self._last_analysis_ts = 0.0
 
         self._current_label: str | None = None
         self._current_streak = 0
@@ -91,6 +95,14 @@ class PositionMonitor:
         if frame is None:
             return
 
+        now = time.monotonic()
+        if (
+            self._analysis_cooldown > 0
+            and self._last_analysis_ts > 0
+            and (now - self._last_analysis_ts) < self._analysis_cooldown
+        ):
+            return
+
         processed = self._preprocess_frame(frame)
         results = self._get_model()(
             processed,
@@ -100,6 +112,7 @@ class PositionMonitor:
             iou=self._model_iou,
             verbose=False,
         )
+        self._last_analysis_ts = now
 
         raw_result = results[0] if results else None
         prediction = self._parse_prediction(raw_result)
