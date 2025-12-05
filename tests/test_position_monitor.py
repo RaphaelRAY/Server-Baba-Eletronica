@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -18,7 +18,13 @@ class TestPositionMonitor(unittest.TestCase):
         registry = MagicMock()
         registry.get_all.return_value = ["tok"]
         model = MagicMock()
-        model.names = {0: "absent", 1: "left", 2: "prone", 3: "sunpine"}
+        model.names = {
+            0: "absent",
+            1: "left",
+            2: "prone",
+            3: "sunpine",
+            4: "face_covered",
+        }
         monitor = PositionMonitor(
             notifier,
             registry,
@@ -110,6 +116,39 @@ class TestPositionMonitor(unittest.TestCase):
         notifier.notify.assert_not_called()
         self.assertFalse(monitor.face_down_sent)
         self.assertEqual(memory_events, [])
+
+    def test_face_covered_triggers_alert(self):
+        monitor, notifier, _, model = self._build_monitor(
+            stable_frames=1, min_confidence=0.2
+        )
+        model.return_value = [self._result(4)]
+
+        monitor.analyze_frame(self._blank_frame())
+        model.return_value = [self._result(3)]
+        monitor.analyze_frame(self._blank_frame())
+
+        notifier.notify.assert_called_once()
+        self.assertEqual(notifier.notify.call_args.kwargs["title"], "Rosto coberto")
+        self.assertFalse(monitor.face_covered_sent)
+        self.assertTrue(
+            any(ev["type"] == "posture_face_covered" for ev in memory_events)
+        )
+
+    def test_records_detection_timing(self):
+        monitor, notifier, _, model = self._build_monitor(
+            stable_frames=1, min_confidence=0.2
+        )
+        model.return_value = [self._result(2)]
+
+        frame = self._blank_frame()
+        with patch("src.monitor.position_monitor.time.perf_counter", side_effect=[1.05, 1.06]):
+            monitor.analyze_frame(frame, frame_captured_at=1.0)
+
+        stats = monitor.get_timing_stats()
+        self.assertEqual(stats["count"], 1)
+        last = stats["last"]
+        self.assertAlmostEqual(last["process_s"], 0.05)
+        self.assertAlmostEqual(last["total_s"], 0.06)
 
 
 if __name__ == "__main__":

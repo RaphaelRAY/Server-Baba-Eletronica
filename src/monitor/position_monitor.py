@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import deque
+from threading import Lock
 import logging
 import pathlib
 import time
@@ -37,6 +39,20 @@ class PostureResult:
     raw_result: object | None = None
 
 
+@dataclass
+class DetectionTiming:
+    """Tempo de processamento/alerta para um frame analisado."""
+
+    label: str | None
+    confidence: float | None
+    frame_ts: float
+    detection_ts: float
+    alert_ts: float
+    process_time: float
+    alert_delay: float
+    total_time: float
+
+
 class PositionMonitor:
     """Monitor posture classification to detect risky positions."""
 
@@ -47,7 +63,7 @@ class PositionMonitor:
         db: Database | None = None,
         *,
         model: YOLO | None = None,
-        model_path: str = "clsModel.pt",
+        model_path: str = "clsModel3.pt",
         model_conf: float = 0.25,
         model_iou: float = 0.5,
         face_down_margin: float = 20.0,  # legacy compatibility
@@ -88,10 +104,20 @@ class PositionMonitor:
         self._absent_count = 0
         self._has_face_down_alert = False
         self._has_face_down_suspected = False
+        self._has_face_covered_alert = False
+        self._timings: deque[DetectionTiming] = deque(maxlen=200)
+        self._timing_lock = Lock()
+        self._last_frame_capture_ts: float | None = None
 
-    def analyze_frame(self, frame, show: bool = False) -> None:
-        """Classify a frame and trigger notifications according to posture."""
+    def analyze_frame(
+        self, frame, show: bool = False, *, frame_captured_at: float | None = None
+    ) -> None:
+        """Classify a frame, timestamp processing and trigger notifications."""
         self._last_frame = frame
+        capture_ts = (
+            frame_captured_at if frame_captured_at is not None else time.perf_counter()
+        )
+        self._last_frame_capture_ts = capture_ts
         if frame is None:
             return
 
@@ -116,12 +142,21 @@ class PositionMonitor:
 
         raw_result = results[0] if results else None
         prediction = self._parse_prediction(raw_result)
-        self._handle_prediction(prediction)
+        detection_ts = time.perf_counter()
+        self._handle_prediction(
+            prediction, detection_ts=detection_ts, frame_ts=capture_ts
+        )
 
         if show:
             self._render_prediction(raw_result, frame, prediction)
 
-    def _handle_prediction(self, prediction: PostureResult | None) -> None:
+    def _handle_prediction(
+        self,
+        prediction: PostureResult | None,
+        *,
+        detection_ts: float | None = None,
+        frame_ts: float | None = None,
+    ) -> None:
         """Apply simple state machine on top of classifier output."""
         if prediction is None or prediction.label is None:
             self._reset_streak()
@@ -157,11 +192,34 @@ class PositionMonitor:
                     extra={"label": label},
                 )
                 self.face_down_suspected_sent = True
+                self._record_detection_timing(
+                    frame_ts, detection_ts, time.perf_counter(), label, confidence
+                )
             self.face_down_sent = False
+            self.face_covered_sent = False
             return
 
         if label in ("supine", "sunpine"):
             self._clear_alerts()
+            return
+
+        if label == "face_covered":
+            if (
+                self._current_streak >= self._stable_frames
+                and not self.face_covered_sent
+            ):
+                self._emit_event(
+                    title="Rosto coberto",
+                    message=f"Rosto possivelmente coberto ({confidence:.2f})",
+                    level="Urgente",
+                    event_type="posture_face_covered",
+                    confidence=confidence,
+                    extra={"label": label},
+                )
+                self.face_covered_sent = True
+                self._record_detection_timing(
+                    frame_ts, detection_ts, time.perf_counter(), label, confidence
+                )
             return
 
         if label == "prone":
@@ -176,6 +234,9 @@ class PositionMonitor:
                 )
                 self.face_down_sent = True
                 self.face_down_suspected_sent = False
+                self._record_detection_timing(
+                    frame_ts, detection_ts, time.perf_counter(), label, confidence
+                )
             return
 
         if label == "left":
@@ -192,7 +253,11 @@ class PositionMonitor:
                     extra={"label": label},
                 )
                 self.face_down_suspected_sent = True
+                self._record_detection_timing(
+                    frame_ts, detection_ts, time.perf_counter(), label, confidence
+                )
             self.face_down_sent = False
+            self.face_covered_sent = False
             return
 
         # Unknown but confident label; keep state reset.
@@ -258,7 +323,7 @@ class PositionMonitor:
 
     def _normalize_label(self, label: str) -> str:
         """Normalize label strings coming from the classifier."""
-        normalized = label.strip().lower()
+        normalized = label.strip().lower().replace(" ", "_")
         if normalized == "sunpine":
             return "supine"
         return normalized
@@ -364,6 +429,63 @@ class PositionMonitor:
         except Exception:
             logger.exception("Failed to record event: %s", event_type)
 
+    def _record_detection_timing(
+        self,
+        frame_ts: float | None,
+        detection_ts: float | None,
+        alert_ts: float | None,
+        label: str | None,
+        confidence: float | None,
+    ) -> None:
+        """Save detection/alert timeline for diagnostics."""
+        if frame_ts is None or detection_ts is None or alert_ts is None:
+            return
+
+        process_time = max(0.0, detection_ts - frame_ts)
+        alert_delay = max(0.0, alert_ts - detection_ts)
+        total_time = max(0.0, alert_ts - frame_ts)
+        sample = DetectionTiming(
+            label=label,
+            confidence=confidence,
+            frame_ts=frame_ts,
+            detection_ts=detection_ts,
+            alert_ts=alert_ts,
+            process_time=process_time,
+            alert_delay=alert_delay,
+            total_time=total_time,
+        )
+        with self._timing_lock:
+            self._timings.append(sample)
+
+    def get_timing_stats(self) -> dict:
+        """Return last/average detection-to-alert timings in seconds."""
+        with self._timing_lock:
+            samples = list(self._timings)
+        if not samples:
+            return {}
+
+        last = samples[-1]
+        count = len(samples)
+        mean_process = sum(s.process_time for s in samples) / count
+        mean_alert = sum(s.alert_delay for s in samples) / count
+        mean_total = sum(s.total_time for s in samples) / count
+
+        return {
+            "count": count,
+            "last": {
+                "label": last.label,
+                "confidence": last.confidence,
+                "process_s": last.process_time,
+                "alert_s": last.alert_delay,
+                "total_s": last.total_time,
+            },
+            "averages": {
+                "process_s": mean_process,
+                "alert_s": mean_alert,
+                "total_s": mean_total,
+            },
+        }
+
     def _reset_streak(self) -> None:
         self._current_label = None
         self._current_streak = 0
@@ -373,6 +495,7 @@ class PositionMonitor:
         self._absent_count = 0
         self.face_down_sent = False
         self.face_down_suspected_sent = False
+        self.face_covered_sent = False
 
     def _auto_device(self) -> str:
         """Pick GPU if available, otherwise CPU."""
@@ -424,3 +547,12 @@ class PositionMonitor:
     @face_down_suspected_sent.setter
     def face_down_suspected_sent(self, value: bool) -> None:
         self._has_face_down_suspected = bool(value)
+
+    @property
+    def face_covered_sent(self) -> bool:
+        """Return whether a covered-face alert has been dispatched."""
+        return self._has_face_covered_alert
+
+    @face_covered_sent.setter
+    def face_covered_sent(self, value: bool) -> None:
+        self._has_face_covered_alert = bool(value)

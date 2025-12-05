@@ -97,9 +97,17 @@ presence_monitor = PresenceMonitor(
     camera_timeout=cam_disc_secs,
     camera_miss_threshold=cam_disc_misses,
 )
+def _default_posture_model_path() -> str:
+    """Pick latest known posture model when env not provided."""
+    candidate = pathlib.Path("clsModel2.pt")
+    if candidate.is_file():
+        return str(candidate)
+    return "clsModel.pt"
+
+
 # Pose detection thresholds (optional configuration)
 pose_no_face_frames = int(os.getenv("POSE_NO_FACE_FRAMES", "12"))
-posture_model_path = os.getenv("POSTURE_MODEL_PATH", "clsModel.pt")
+posture_model_path = os.getenv("POSTURE_MODEL_PATH") or _default_posture_model_path()
 try:
     posture_conf_min = float(
         os.getenv("POSTURE_CONF_MIN", os.getenv("POSE_FACE_CONF_MIN", "0.35"))
@@ -222,47 +230,61 @@ t_detection_thread = Thread(target=lambda: None)
 # Função de loop contínuo de processamento
 def processing_loop():
     """
-    Loop dedicado ao rastreamento automático PTZ com base na detecção de pessoa.
-    Não salva nem exibe nada — só move a câmera.
+    Loop dedicado ao rastreamento automatico PTZ com base na deteccao de pessoa.
+    Nao salva nem exibe nada - so move a camera.
     """
     while not t_processing_stop.is_set():
-        frame = camera.get_frame()
+        frame, frame_ts = camera.get_frame_with_timestamp()
         presence_monitor.check_camera(frame)
         if frame is None:
             time.sleep(0.1)
             continue
 
-        _enqueue_frame(pose_queue, frame)
-        _enqueue_frame(detection_queue, frame)
+        _enqueue_frame(pose_queue, frame, frame_ts)
+        _enqueue_frame(detection_queue, frame, frame_ts)
 
         time.sleep(0.01)  # pequena pausa para aliviar CPU
 
 
-def _enqueue_frame(queue_obj: Queue, frame):
-    """Enfileira cópia do frame, descartando o mais antigo se estiver cheio."""
+def _enqueue_frame(queue_obj: Queue, frame, frame_ts):
+    """Enfileira copia do frame + timestamp, descartando o mais antigo se estiver cheio."""
     try:
-        queue_obj.put(frame.copy(), timeout=0.05)
+        queue_obj.put((frame.copy(), frame_ts), timeout=0.05)
     except Full:
         try:
             queue_obj.get_nowait()
         except Empty:
             pass
         try:
-            queue_obj.put(frame.copy(), timeout=0.05)
+            queue_obj.put((frame.copy(), frame_ts), timeout=0.05)
         except Full:
             pass
 
+
+def _unwrap_frame_packet(packet):
+    """Extrai frame e timestamp de pacotes usados nas filas."""
+    if isinstance(packet, (tuple, list)) and len(packet) >= 2:
+        return packet[0], packet[1]
+    if isinstance(packet, dict):
+        return packet.get("frame"), packet.get("timestamp")
+    return packet, None
 
 def pose_loop():
     """Processa frames dedicados à análise de postura via classificação."""
     while not t_processing_stop.is_set():
         try:
-            frame = pose_queue.get(timeout=0.1)
+            packet = pose_queue.get(timeout=0.1)
         except Empty:
             continue
 
+        frame, frame_ts = _unwrap_frame_packet(packet)
+        if frame is None:
+            continue
+
         try:
-            position_monitor.analyze_frame(frame, show=SHOW_POSE_WINDOW)
+            position_monitor.analyze_frame(
+                frame, show=SHOW_POSE_WINDOW, frame_captured_at=frame_ts
+            )
         except Exception as exc:
             logging.exception("Erro na thread de pose: %s", exc)
 
@@ -271,11 +293,14 @@ def detection_loop():
     """Processa frames dedicados à detecção e controle PTZ."""
     while not t_processing_stop.is_set():
         try:
-            frame = detection_queue.get(timeout=0.1)
+            packet = detection_queue.get(timeout=0.1)
         except Empty:
             continue
 
         try:
+            frame, frame_ts = _unwrap_frame_packet(packet)
+            if frame is None:
+                continue
             results = processor.process_frame_data(frame)
             if results is None:
                 results = []
@@ -593,6 +618,73 @@ def get_latency():
             "samples": stats["count"],
         }
     )
+
+
+@app.get("/api/performance")
+def get_performance_metrics():
+    """Retorna métricas de FPS, latência de vídeo e tempo entre detecção e alerta."""
+    fps_stats = camera.get_fps_stats() or {}
+    latency_stats = camera.get_latency_stats() or {}
+    timing_stats = position_monitor.get_timing_stats() or {}
+
+    if not fps_stats and not latency_stats and not timing_stats:
+        raise HTTPException(503, "Ainda nao ha metricas coletadas")
+
+    def _round_opt(value, ndigits: int = 2):
+        return None if value is None else round(value, ndigits)
+
+    def _ms(value, ndigits: int = 2):
+        return None if value is None else round(value * 1000, ndigits)
+
+    fps_payload = (
+        {
+            "current": _round_opt(fps_stats.get("current")),
+            "mean": _round_opt(fps_stats.get("mean")),
+            "min": _round_opt(fps_stats.get("min")),
+            "max": _round_opt(fps_stats.get("max")),
+            "samples": fps_stats.get("samples", 0),
+        }
+        if fps_stats
+        else {}
+    )
+
+    latency_payload = (
+        {
+            "last_ms": _ms(camera.get_last_latency()),
+            "mean_ms": _ms(latency_stats.get("mean")),
+            "min_ms": _ms(latency_stats.get("min")),
+            "max_ms": _ms(latency_stats.get("max")),
+            "samples": latency_stats.get("count", 0),
+        }
+        if latency_stats
+        else {}
+    )
+
+    timing_payload = {}
+    if timing_stats:
+        last = timing_stats.get("last") or {}
+        averages = timing_stats.get("averages") or {}
+        timing_payload = {
+            "count": timing_stats.get("count", 0),
+            "last": {
+                "label": last.get("label"),
+                "confidence": last.get("confidence"),
+                "process_ms": _ms(last.get("process_s")),
+                "alert_ms": _ms(last.get("alert_s")),
+                "total_ms": _ms(last.get("total_s")),
+            },
+            "averages": {
+                "process_ms": _ms(averages.get("process_s")),
+                "alert_ms": _ms(averages.get("alert_s")),
+                "total_ms": _ms(averages.get("total_s")),
+            },
+        }
+
+    return {
+        "fps": fps_payload,
+        "latency_ms": latency_payload,
+        "detection_to_alert_ms": timing_payload,
+    }
 
 
 if __name__ == "__main__":

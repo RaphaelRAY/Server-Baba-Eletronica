@@ -6,10 +6,8 @@ import socket
 import time
 from datetime import timedelta
 from typing import Any
-
 # Suprime logs do OpenCV/FFmpeg
 os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
-
 import cv2
 try:
     from onvif import ONVIFCamera  # type: ignore
@@ -17,12 +15,10 @@ except ImportError:  # pragma: no cover - permit tests without onvif dependency
     ONVIFCamera = None  # type: ignore
 from threading import Thread, Event, Lock
 from collections import deque
-
 _DURATION_RE = re.compile(
     r"^P(?:(?P<days>\d+)D)?"
     r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?$"
 )
-
 
 def _env_float(
     name: str,
@@ -31,15 +27,14 @@ def _env_float(
     min_value: float | None = None,
     max_value: float | None = None,
 ) -> float:
-    """Obtém float positivo do ambiente com limites opcionais."""
-
+    """ObtÃ©m float positivo do ambiente com limites opcionais."""
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
     try:
         value = float(raw)
     except Exception:
-        logging.warning("Valor inválido para %s: %r", name, raw)
+        logging.warning("Valor invÃ¡lido para %s: %r", name, raw)
         return default
     if min_value is not None and value < min_value:
         value = min_value
@@ -49,7 +44,6 @@ def _env_float(
         return default
     return value
 
-
 def _as_iterable(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -57,14 +51,12 @@ def _as_iterable(value: Any) -> list[Any]:
         return list(value)
     return [value]
 
-
 def _get_attr_or_key(obj: Any, name: str) -> Any:
     if obj is None:
         return None
     if isinstance(obj, dict):
         return obj.get(name)
     return getattr(obj, name, None)
-
 
 def _coerce_float(value: Any) -> float | None:
     if value is None:
@@ -78,7 +70,6 @@ def _coerce_float(value: Any) -> float | None:
         return float(str(value))
     except Exception:
         return None
-
 
 def _coerce_timeout_seconds(value: Any) -> float | None:
     if value is None:
@@ -100,10 +91,8 @@ def _coerce_timeout_seconds(value: Any) -> float | None:
         seconds = float(match.group("seconds") or 0)
         return max(days * 86400 + hours * 3600 + minutes * 60 + seconds, 0.0)
     return None
-
-# Timeout global para conexões socket ONVIF (em segundos)
+# Timeout global para conexÃµes socket ONVIF (em segundos)
 socket.setdefaulttimeout(2)
-
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -111,10 +100,8 @@ def _env_bool(name: str, default: bool) -> bool:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
-
 class CameraHandler:
-    """Captura vídeo (ONVIF/RTSP/arquivo/dispositivo) em thread e mede latência."""
-
+    """Captura vÃ­deo (ONVIF/RTSP/arquivo/dispositivo) em thread e mede latÃªncia."""
     def __init__(
         self,
         host: str,
@@ -132,12 +119,11 @@ class CameraHandler:
         file_fps: float | None = None,
         topdown_mode: bool | None = None,
     ):
-        """Configura fonte de vídeo e opções.
-
+        """Configura fonte de vÃ­deo e opÃ§Ãµes.
         - source: "onvif" | "rtsp" | "file" | "device"
         - rtsp_url: URL completa quando source == "rtsp"
         - video_path: caminho para arquivo quando source == "file"
-        - device_index: índice do dispositivo quando source == "device"
+        - device_index: Ã­ndice do dispositivo quando source == "device"
         """
         self.host = host
         self.port = port
@@ -145,7 +131,6 @@ class CameraHandler:
         self.passwd = passwd
         self.width = width
         self.height = height
-
         self.source = (source or "onvif").lower()
         self.rtsp_url = rtsp_url
         self.video_path = video_path
@@ -153,41 +138,38 @@ class CameraHandler:
             self.device_index = int(device_index) if device_index is not None else None
         except Exception:
             self.device_index = None
-
         # Habilita PTZ apenas para ONVIF
         self.ptz_enabled = self.source == "onvif"
-
-        # Controle de FPS (somente para source=file por padrão)
+        # Controle de FPS (somente para source=file por padrÃ£o)
         self.sync_file_fps = bool(sync_file_fps)
         try:
             self.file_fps = float(file_fps) if file_fps else None
         except Exception:
             self.file_fps = None
-
         self._source_fps: float | None = None
         self._frame_period: float | None = None
         self._next_frame_ts: float | None = None
-
         self._camera = None
         self._cap = None
         self._thread: Thread = None
         self._stop = Event()
         self._frame = None
         self._lock = Lock()
-
-        # Para medir latência de read()
+        self._frame_ts: float | None = None
+        self._frame_times: deque[float] = deque(maxlen=300)
+        self._fps_samples: deque[float] = deque(maxlen=180)
+        self._fps_counter: int = 0
+        self._fps_window_start: float | None = None
+        # Para medir latÃªncia de read()
         self._last_latency: float = None
         self._latencies = deque(maxlen=100)
-
         # Cache da URI de streaming
         self._stream_uri: str = None
-
-        # Reconexão
+        # ReconexÃ£o
         self._reconnecting: bool = False
         self._reconnect_thread: Thread | None = None
         self._reconnect_delay: float = 5.0
-
-        # Configurações de PTZ
+        # ConfiguraÃ§Ãµes de PTZ
         self._ptz_service = None
         self._ptz_profile_token: str | None = None
         self._ptz_configuration_token: str | None = None
@@ -213,48 +195,54 @@ class CameraHandler:
         self._filtered_err_y: float = 0.0
         self._ptz_failures: int = 0
         self._ptz_inflight: bool = False
-
     def _sleep_interruptible(self, seconds: float, step: float = 0.1) -> None:
         """Sleep in small steps so stop() can interrupt long waits."""
         deadline = time.time() + max(0.0, seconds)
         while not self._stop.is_set() and time.time() < deadline:
             time.sleep(min(step, max(0.0, deadline - time.time())))
-
     def start(self) -> None:
         """Inicializa ONVIF (uma vez), abre stream RTSP com timeout e inicia thread."""
-        # Se já está rodando, ignora
+        # Se jÃ¡ estÃ¡ rodando, ignora
         if self._cap and self._cap.isOpened() and self._thread and self._thread.is_alive():
             return
-
         try:
             self._open_connections()
-
         except Exception as e:
-            logging.error("Falha ao iniciar câmera: %s", e)
-            # agenda reconexão periódica
+            logging.error("Falha ao iniciar cÃ¢mera: %s", e)
+            # agenda reconexÃ£o periÃ³dica
             self._schedule_reconnect()
-
     def _capture_loop(self):
-        """Loop contínuo: lê frame, mede latência e armazena."""
+        """Loop contÃ­nuo: lÃª frame, mede latÃªncia e armazena."""
         while not self._stop.is_set():
             if not self._cap or not self._cap.isOpened():
                 # tenta reabrir com atraso para evitar loop apertado
                 self._restart_capture(delay=self._reconnect_delay)
                 time.sleep(0.1)
                 continue
-
             t0 = time.time()
             ret, frame = self._cap.read()
             t1 = time.time()
-
             if ret:
                 latency = t1 - t0
+                capture_ts = time.perf_counter()
                 with self._lock:
                     self._frame = frame
+                    self._frame_ts = capture_ts
                     self._last_latency = latency
                     self._latencies.append(latency)
-
-                # Ritmo de saída: manter FPS do arquivo, se configurado
+                    self._frame_times.append(capture_ts)
+                    if self._fps_window_start is None:
+                        self._fps_window_start = capture_ts
+                        self._fps_counter = 1
+                    else:
+                        self._fps_counter += 1
+                        elapsed = capture_ts - self._fps_window_start
+                        if elapsed >= 1.0:
+                            fps = self._fps_counter / elapsed
+                            self._fps_samples.append(fps)
+                            self._fps_window_start = capture_ts
+                            self._fps_counter = 0
+                # Ritmo de saÃ­da: manter FPS do arquivo, se configurado
                 if (
                     self.source == "file"
                     and self._frame_period
@@ -270,20 +258,26 @@ class CameraHandler:
             else:
                 # reconecta com atraso fixo de 5s
                 self._restart_capture(delay=self._reconnect_delay)
-
     def get_frame(self):
-        """Retorna uma cópia do último frame ou None."""
+        """Retorna uma cÃ³pia do Ãºltimo frame ou None."""
         with self._lock:
             return None if self._frame is None else self._frame.copy()
-
+    def get_frame_with_timestamp(self):
+        """Retorna último frame e timestamp de captura (perf_counter)."""
+        with self._lock:
+            frame_copy = None if self._frame is None else self._frame.copy()
+            return frame_copy, self._frame_ts
+    def get_last_frame_timestamp(self) -> float | None:
+        """Timestamp (perf_counter) do último frame armazenado."""
+        with self._lock:
+            return self._frame_ts
     def get_last_latency(self) -> float:
-        """Retorna latência (s) do último read()."""
+        """Retorna latÃªncia (s) do Ãºltimo read()."""
         with self._lock:
             return self._last_latency
-
     def get_latency_stats(self) -> dict:
         """
-        Estatísticas de latência dos últimos frames:
+        EstatÃ­sticas de latÃªncia dos Ãºltimos frames:
         { mean, min, max, count } em segundos.
         """
         with self._lock:
@@ -296,9 +290,31 @@ class CameraHandler:
             "max": max(vals),
             "count": len(vals),
         }
-
+    def get_fps_stats(self) -> dict:
+        """MÃ©tricas de FPS real medido na leitura do stream."""
+        with self._lock:
+            frame_times = list(self._frame_times)
+            samples = list(self._fps_samples)
+        current = None
+        if len(frame_times) >= 2:
+            span = frame_times[-1] - frame_times[0]
+            if span > 0:
+                current = (len(frame_times) - 1) / span
+        if samples:
+            mean_val = sum(samples) / len(samples)
+            min_val = min(samples)
+            max_val = max(samples)
+        else:
+            mean_val = min_val = max_val = None
+        return {
+            "current": current,
+            "mean": mean_val,
+            "min": min_val,
+            "max": max_val,
+            "samples": len(samples),
+        }
     def _restart_capture(self, *, delay: float = 5.0):
-        """Reabre o VideoCapture a partir da URI cacheada após um atraso."""
+        """Reabre o VideoCapture a partir da URI cacheada apÃ³s um atraso."""
         try:
             if self._cap:
                 self._cap.release()
@@ -324,7 +340,7 @@ class CameraHandler:
                 self._cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
             if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
                 self._cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
-            # Recalcula FPS e período para arquivo
+            # Recalcula FPS e perÃ­odo para arquivo
             self._source_fps = None
             self._frame_period = None
             self._next_frame_ts = None
@@ -341,29 +357,25 @@ class CameraHandler:
                     self._frame_period = 1.0 / self._source_fps
         except Exception as e:
             logging.warning("Falha ao reabrir stream: %s", e)
-
     def _open_connections(self) -> None:
-        """Prepara a fonte de vídeo escolhida e inicia captura + thread."""
+        """Prepara a fonte de vÃ­deo escolhida e inicia captura + thread."""
         # 1) Determina a URI/fonte de captura conforme source
         if not self._stream_uri:
             if self.source == "onvif":
                 if ONVIFCamera is None:
-                    raise RuntimeError("Biblioteca onvif não disponível")
+                    raise RuntimeError("Biblioteca onvif nÃ£o disponÃ­vel")
                 self._camera = ONVIFCamera(self.host, self.port, self.user, self.passwd)
                 media = self._camera.create_media_service()
                 self._ptz_service = None
                 try:
                     self._ptz_service = self._camera.create_ptz_service()
                 except Exception as exc:
-                    logging.warning("Falha ao criar serviço PTZ: %s", exc)
+                    logging.warning("Falha ao criar serviÃ§o PTZ: %s", exc)
                     self._ptz_service = None
-
                 profile = self._select_media_profile(media)
                 if profile is None:
-                    raise RuntimeError("Nenhum profile disponível no serviço de mídia")
-
+                    raise RuntimeError("Nenhum profile disponÃ­vel no serviÃ§o de mÃ­dia")
                 self._setup_ptz_capabilities(profile)
-
                 uri = media.GetStreamUri({
                     "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
                     "ProfileToken": profile.token,
@@ -373,27 +385,25 @@ class CameraHandler:
                 self._stream_uri = uri
             elif self.source == "rtsp":
                 if not self.rtsp_url:
-                    raise ValueError("RTSP_URL não informado para source=rtsp")
+                    raise ValueError("RTSP_URL nÃ£o informado para source=rtsp")
                 self._stream_uri = self.rtsp_url
             elif self.source == "file":
                 if not self.video_path:
-                    raise ValueError("VIDEO_PATH não informado para source=file")
+                    raise ValueError("VIDEO_PATH nÃ£o informado para source=file")
                 self._stream_uri = self.video_path
             elif self.source == "device":
-                # Para device não usamos URI string, abrimos com índice
+                # Para device nÃ£o usamos URI string, abrimos com Ã­ndice
                 self._stream_uri = None
             else:
-                raise ValueError(f"Fonte de vídeo inválida: {self.source}")
-
+                raise ValueError(f"Fonte de vÃ­deo invÃ¡lida: {self.source}")
         # 2) Abre captura com backend apropriado
         if self.source == "device":
-            # Tenta abrir dispositivo por índice
+            # Tenta abrir dispositivo por Ã­ndice
             index = 0 if self.device_index is None else int(self.device_index)
             # Evita passar CAP_FFMPEG para dispositivos
             self._cap = cv2.VideoCapture(index)
         else:
             self._cap = cv2.VideoCapture(self._stream_uri, cv2.CAP_FFMPEG)
-
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
@@ -402,8 +412,7 @@ class CameraHandler:
             self._cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
         if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
             self._cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
-
-        # FPS de origem (para arquivos geralmente disponível)
+        # FPS de origem (para arquivos geralmente disponÃ­vel)
         self._source_fps = None
         self._frame_period = None
         self._next_frame_ts = None
@@ -413,14 +422,13 @@ class CameraHandler:
                 self._source_fps = fps_val
         except Exception:
             pass
-        # Override opcional via parâmetro (útil quando CAP_PROP_FPS = 0)
+        # Override opcional via parÃ¢metro (Ãºtil quando CAP_PROP_FPS = 0)
         if self.source == "file":
             if self.file_fps and self.file_fps > 0:
                 self._source_fps = self.file_fps
-            # Define período caso tenhamos FPS
+            # Define perÃ­odo caso tenhamos FPS
             if self._source_fps and self._source_fps > 0:
                 self._frame_period = 1.0 / self._source_fps
-
         if not self._cap.isOpened():
             ident = (
                 f"device index {self.device_index}"
@@ -428,14 +436,12 @@ class CameraHandler:
                 else self._stream_uri
             )
             raise RuntimeError(f"Falha ao abrir stream: {ident}")
-
         # 3) Inicia thread de captura
         self._stop.clear()
         self._thread = Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
-
     def _select_media_profile(self, media_service) -> Any:
-        """Seleciona um profile que possua configuração PTZ quando disponível."""
+        """Seleciona um profile que possua configuraÃ§Ã£o PTZ quando disponÃ­vel."""
         try:
             profiles = media_service.GetProfiles()
         except Exception as exc:
@@ -447,9 +453,8 @@ class CameraHandler:
             if getattr(profile, "PTZConfiguration", None):
                 return profile
         return profiles[0]
-
     def _setup_ptz_capabilities(self, profile: Any) -> None:
-        """Guarda tokens, limites de velocidade e timeout compatíveis com a câmera."""
+        """Guarda tokens, limites de velocidade e timeout compatÃ­veis com a cÃ¢mera."""
         self._ptz_pan_limit = None
         self._ptz_tilt_limit = None
         self._ptz_timeout_min = 1.0
@@ -458,7 +463,6 @@ class CameraHandler:
         self._ptz_profile_token = getattr(profile, "token", None)
         ptz_config = getattr(profile, "PTZConfiguration", None)
         self._ptz_configuration_token = getattr(ptz_config, "token", None)
-
         timeout = _coerce_timeout_seconds(
             getattr(ptz_config, "DefaultPTZTimeout", None)
             if ptz_config
@@ -466,30 +470,27 @@ class CameraHandler:
         )
         if timeout is not None:
             self._ptz_timeout = timeout
-
-        # Obtém limites detalhados, se o serviço PTZ estiver disponível
+        # ObtÃ©m limites detalhados, se o serviÃ§o PTZ estiver disponÃ­vel
         if not self._ptz_service or not self._ptz_configuration_token:
-            # Garante limites padrão seguros
+            # Garante limites padrÃ£o seguros
             if self._ptz_pan_limit is None:
                 self._ptz_pan_limit = 1.0
             if self._ptz_tilt_limit is None:
                 self._ptz_tilt_limit = 1.0
             self._ptz_timeout = self._clamp_timeout(self._ptz_timeout)
             return
-
         try:
             options = self._ptz_service.GetConfigurationOptions(
                 {"ConfigurationToken": self._ptz_configuration_token}
             )
         except Exception as exc:
-            logging.warning("Falha ao obter opções PTZ: %s", exc)
+            logging.warning("Falha ao obter opÃ§Ãµes PTZ: %s", exc)
             if self._ptz_pan_limit is None:
                 self._ptz_pan_limit = 1.0
             if self._ptz_tilt_limit is None:
                 self._ptz_tilt_limit = 1.0
             self._ptz_timeout = self._clamp_timeout(self._ptz_timeout)
             return
-
         spaces = _get_attr_or_key(options, "Spaces")
         pan_limit = self._ptz_pan_limit
         tilt_limit = self._ptz_tilt_limit
@@ -505,12 +506,10 @@ class CameraHandler:
                     range_info = _get_attr_or_key(space, "Range")
                     x_range = _get_attr_or_key(range_info, "XRange")
                     y_range = _get_attr_or_key(range_info, "YRange")
-
                 x_min = _coerce_float(_get_attr_or_key(x_range, "Min"))
                 x_max = _coerce_float(_get_attr_or_key(x_range, "Max"))
                 y_min = _coerce_float(_get_attr_or_key(y_range, "Min"))
                 y_max = _coerce_float(_get_attr_or_key(y_range, "Max"))
-
                 if x_min is not None and x_max is not None:
                     limit = max(abs(x_min), abs(x_max))
                     if limit > 0:
@@ -519,24 +518,19 @@ class CameraHandler:
                     limit = max(abs(y_min), abs(y_max))
                     if limit > 0:
                         tilt_limit = limit if tilt_limit is None else min(tilt_limit, limit)
-
         timeout_range = None
         for key in ("TimeoutRange", "PTZTimeout", "Timeout"):
             timeout_range = _get_attr_or_key(options, key)
             if timeout_range:
                 break
-
         min_timeout = _coerce_timeout_seconds(_get_attr_or_key(timeout_range, "Min"))
         max_timeout = _coerce_timeout_seconds(_get_attr_or_key(timeout_range, "Max"))
-
         if min_timeout is not None and max_timeout is not None and min_timeout <= max_timeout:
             self._ptz_timeout_min = max(0.1, min_timeout)
             self._ptz_timeout_max = max(min_timeout, max_timeout)
         self._ptz_timeout = self._clamp_timeout(self._ptz_timeout)
-
         self._ptz_pan_limit = pan_limit if pan_limit is not None else 1.0
         self._ptz_tilt_limit = tilt_limit if tilt_limit is not None else 1.0
-
     def _clamp_timeout(self, value: float | None) -> float:
         base = self._ptz_timeout_min if self._ptz_timeout_min else 0.5
         max_allowed = self._ptz_timeout_max if self._ptz_timeout_max else max(base, 1.0)
@@ -551,7 +545,6 @@ class CameraHandler:
         value = max(base, value)
         value = min(max_allowed, value)
         return value
-
     def _refresh_ptz_state(self) -> None:
         if not self.ptz_enabled or self._camera is None:
             return
@@ -560,24 +553,20 @@ class CameraHandler:
         except Exception as exc:
             logging.warning("Falha ao atualizar perfil PTZ: %s", exc)
             return
-
         if self._ptz_service is None:
             try:
                 self._ptz_service = self._camera.create_ptz_service()
             except Exception as exc:
-                logging.warning("Falha ao recriar serviço PTZ: %s", exc)
+                logging.warning("Falha ao recriar serviÃ§o PTZ: %s", exc)
                 self._ptz_service = None
                 return
-
         profile = self._select_media_profile(media)
         if profile is None:
             return
         self._setup_ptz_capabilities(profile)
-
     # -- Preset helpers -------------------------------------------------
-
     def get_ptz_presets(self) -> list[Any]:
-        """Retorna lista de presets PTZ disponíveis ou vazia se indisponível."""
+        """Retorna lista de presets PTZ disponÃ­veis ou vazia se indisponÃ­vel."""
         if not self.ptz_enabled or self._camera is None:
             return []
         self._refresh_ptz_state()
@@ -594,7 +583,6 @@ class CameraHandler:
             logging.exception("Falha ao obter presets PTZ")
             return []
         return _as_iterable(presets)
-
     def goto_preset(self, preset: int | str) -> bool:
         """Solicita movimento imediato para o preset informado."""
         if not self.ptz_enabled or self._camera is None:
@@ -603,11 +591,11 @@ class CameraHandler:
         service = self._ptz_service
         profile_token = self._ptz_profile_token
         if not service or not profile_token:
-            logging.debug("Serviço/token PTZ indisponíveis para goto preset")
+            logging.debug("ServiÃ§o/token PTZ indisponÃ­veis para goto preset")
             return False
         mover = getattr(service, "GotoPreset", None)
         if mover is None:
-            logging.debug("Serviço PTZ não implementa GotoPreset")
+            logging.debug("ServiÃ§o PTZ nÃ£o implementa GotoPreset")
             return False
         payload = {"ProfileToken": profile_token, "PresetToken": str(preset)}
         try:
@@ -618,7 +606,6 @@ class CameraHandler:
         except Exception:
             logging.exception("Falha ao mover PTZ para preset %s", preset)
             return False
-
     def _format_timeout(self) -> str:
         seconds = self._clamp_timeout(self._ptz_timeout)
         self._ptz_timeout = seconds
@@ -626,12 +613,10 @@ class CameraHandler:
             return f"PT{int(round(seconds))}S"
         numeric = f"{seconds:.2f}".rstrip("0").rstrip(".")
         return f"PT{numeric}S"
-
     def _schedule_reconnect(self) -> None:
-        """Agenda tentativas de reconexão a cada 5s até sucesso."""
+        """Agenda tentativas de reconexÃ£o a cada 5s atÃ© sucesso."""
         if self._reconnecting or self._stop.is_set():
             return
-
         def _loop():
             self._reconnecting = True
             while not self._stop.is_set():
@@ -639,24 +624,20 @@ class CameraHandler:
                     # Allow early exit on stop
                     self._sleep_interruptible(self._reconnect_delay)
                     self._open_connections()
-                    logging.info("Câmera reconectada com sucesso")
+                    logging.info("CÃ¢mera reconectada com sucesso")
                     break
                 except Exception as e:
-                    logging.warning("Tentativa de reconexão falhou: %s", e)
+                    logging.warning("Tentativa de reconexÃ£o falhou: %s", e)
                     continue
             self._reconnecting = False
-
         self._reconnect_thread = Thread(target=_loop, daemon=True)
         self._reconnect_thread.start()
-
     def is_running(self) -> bool:
         """Retorna True se a thread e a captura estiverem ativas."""
         return bool(self._cap and self._cap.isOpened() and self._thread and self._thread.is_alive())
-
     def set_topdown_mode(self, enabled: bool) -> None:
-        """Define se o modo top-down (reduz tilt) está ativo."""
+        """Define se o modo top-down (reduz tilt) estÃ¡ ativo."""
         self._topdown_mode = bool(enabled)
-
     def control_ptz(self, err_x: float, err_y: float, kp: float = 1.5) -> None:
         if not self.ptz_enabled or self._camera is None:
             return
@@ -666,32 +647,26 @@ class CameraHandler:
             return
         if self._ptz_inflight:
             return
-
         with self._ptz_lock:
             if self._ptz_inflight:
                 return
-            # Suavização exponencial das componentes de erro
+            # SuavizaÃ§Ã£o exponencial das componentes de erro
             alpha = 0.3
             self._filtered_err_x = alpha * err_x + (1 - alpha) * self._filtered_err_x
             self._filtered_err_y = alpha * err_y + (1 - alpha) * self._filtered_err_y
             err_x = self._filtered_err_x
             err_y = self._filtered_err_y
-
-            # Zona morta circular evita micro movimentações
+            # Zona morta circular evita micro movimentaÃ§Ãµes
             deadband_radius = 0.03
             if math.hypot(err_x, err_y) < deadband_radius:
                 return
-
             def shape(value: float) -> float:
                 return math.tanh(2.5 * value)
-
             min_pan, min_tilt = 0.12, 0.12
             pan_limit = self._ptz_pan_limit if self._ptz_pan_limit is not None else 1.0
             tilt_limit = self._ptz_tilt_limit if self._ptz_tilt_limit is not None else 1.0
-
             magnitude = min(1.0, abs(err_x) + abs(err_y))
             dynamic_gain = (0.6 + 0.4 * magnitude) * kp
-
             def calc_axis(err: float, limit: float, min_axis: float) -> float:
                 if abs(err) < deadband_radius:
                     return 0.0
@@ -702,16 +677,12 @@ class CameraHandler:
                 if value != 0.0:
                     value = math.copysign(max(abs(value), min_axis), value)
                 return max(min(value, limit), -limit)
-
             vx = calc_axis(err_x, pan_limit, min_pan)
             vy = calc_axis(err_y, tilt_limit, min_tilt)
-
             if self._topdown_mode:
                 vy *= 0.3
-
             if vx == 0.0 and vy == 0.0:
                 return
-
             adaptive_interval = 0.1 + 0.3 * (1 - magnitude)
             dynamic_interval = max(0.05, min(self._ptz_command_interval, adaptive_interval))
             target_time = self._ptz_last_command_ts + dynamic_interval
@@ -722,7 +693,6 @@ class CameraHandler:
                     self._sleep_interruptible(wait_time)
                     if self._stop.is_set():
                         return
-
             move_duration = max(0.0, min(self._ptz_move_duration, self._ptz_timeout))
             pan_velocity = vx
             tilt_velocity = -vy
@@ -743,13 +713,11 @@ class CameraHandler:
                 tilt_velocity,
                 move_duration,
             )
-
             payload = {
                 "ProfileToken": self._ptz_profile_token,
                 "Velocity": {"PanTilt": {"x": pan_velocity, "y": tilt_velocity}},
             }
             stop_payload = {"ProfileToken": self._ptz_profile_token}
-
             self._ptz_failures = getattr(self, "_ptz_failures", 0)
             self._ptz_inflight = True
             try:
@@ -768,8 +736,6 @@ class CameraHandler:
             finally:
                 self._ptz_last_command_ts = time.monotonic()
                 self._ptz_inflight = False
-
-
     def stop(self) -> None:
         """Para a thread e libera recursos."""
         self._stop.set()
