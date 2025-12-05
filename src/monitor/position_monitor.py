@@ -63,7 +63,7 @@ class PositionMonitor:
         db: Database | None = None,
         *,
         model: YOLO | None = None,
-        model_path: str = "clsModel3.pt",
+        model_path: str = "clsModel4.pt",
         model_conf: float = 0.25,
         model_iou: float = 0.5,
         face_down_margin: float = 20.0,  # legacy compatibility
