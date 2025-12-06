@@ -77,7 +77,7 @@ class PositionMonitor:
         stable_frames: int = 2,
         imgsz: int = 224,
         device: str | None = None,
-        analysis_cooldown_secs: float = 5.0,
+        analysis_cooldown_secs: float = 1.0,
     ):
         """Configure monitor with notifier, registry and classification params."""
         self.notifier = notifier
@@ -108,6 +108,10 @@ class PositionMonitor:
         self._timings: deque[DetectionTiming] = deque(maxlen=200)
         self._timing_lock = Lock()
         self._last_frame_capture_ts: float | None = None
+        self._last_prediction: PostureResult | None = None
+        self._last_display_prediction: PostureResult | None = None
+        self._last_raw_result = None
+        self._last_probabilities: list[tuple[str, float]] = []
 
     def analyze_frame(
         self, frame, show: bool = False, *, frame_captured_at: float | None = None
@@ -127,6 +131,11 @@ class PositionMonitor:
             and self._last_analysis_ts > 0
             and (now - self._last_analysis_ts) < self._analysis_cooldown
         ):
+            if show:
+                # Mesmo em cooldown, mantém janela atualizada com o frame mais recente
+                self._render_prediction(
+                    None, frame, self._last_display_prediction
+                )
             return
 
         processed = self._preprocess_frame(frame)
@@ -142,13 +151,25 @@ class PositionMonitor:
 
         raw_result = results[0] if results else None
         prediction = self._parse_prediction(raw_result)
+        self._last_prediction = prediction
+        if raw_result is not None:
+            self._last_raw_result = raw_result
+        self._last_probabilities = self._extract_probabilities(raw_result)
+        display_prediction = prediction
+        if prediction and (
+            prediction.label is None or prediction.confidence < self._min_confidence
+        ):
+            # Mantém última predição válida para evitar flicker na janela
+            display_prediction = self._last_display_prediction
+        else:
+            self._last_display_prediction = prediction
         detection_ts = time.perf_counter()
         self._handle_prediction(
             prediction, detection_ts=detection_ts, frame_ts=capture_ts
         )
 
         if show:
-            self._render_prediction(raw_result, frame, prediction)
+            self._render_prediction(raw_result, frame, display_prediction)
 
     def _handle_prediction(
         self,
@@ -360,29 +381,26 @@ class PositionMonitor:
             self._pose_window_initialized = True
 
         render = frame.copy() if hasattr(frame, "copy") else frame
-        if raw_result is not None:
-            try:
-                plotted = raw_result.plot()
-                if plotted is not None:
-                    render = plotted
-            except Exception:
-                logger.debug("Failed to render classifier output", exc_info=True)
 
-        if prediction and prediction.label:
-            try:
-                text = f"{prediction.label} ({prediction.confidence:.2f})"
+        # Desenha probabilidades de todas as classes (mais leve que raw_result.plot)
+        try:
+            probs = self._last_probabilities or []
+            y = 30
+            for label, score in probs:
+                text = f"{label} {score:.2f}"
                 cv2.putText(
                     render,
                     text,
-                    (15, 30),
+                    (15, y),
                     getattr(cv2, "FONT_HERSHEY_SIMPLEX", 0),
                     1,
                     (0, 255, 255),
                     2,
                     getattr(cv2, "LINE_AA", 16),
                 )
-            except Exception:
-                logger.debug("Failed to draw classification text", exc_info=True)
+                y += 28
+        except Exception:
+            logger.debug("Failed to draw probability list", exc_info=True)
 
         if render is None:
             render = frame
@@ -401,7 +419,7 @@ class PositionMonitor:
     def _notify_all(self, title: str, message: str, *, level: str = "info") -> None:
         """Send a notification to all tokens with level."""
         for token in self.registry.get_all():
-            self.notifier.notify(token, title=title, message=message, level=level)
+            self.notifier.send_immediate(token, title=title, message=message, level=level)
 
     def _record_event(
         self,
@@ -520,6 +538,49 @@ class PositionMonitor:
         if self._model is None:
             self._model = YOLO(self._resolve_model_path())
         return self._model
+
+    def _extract_probabilities(self, raw_result) -> list[tuple[str, float]]:
+        """Return list of (label, score) for all classes, sorted by score desc."""
+        if raw_result is None:
+            return []
+        probs = getattr(raw_result, "probs", None)
+        if probs is None:
+            return []
+        names = getattr(self._get_model(), "names", None)
+        if not names:
+            return []
+        try:
+            data = getattr(probs, "data", None)
+        except Exception:
+            data = None
+        scores: list[float] = []
+        if data is not None:
+            try:
+                scores = list(data.tolist())
+            except Exception:
+                try:
+                    scores = [float(x) for x in data]
+                except Exception:
+                    scores = []
+        if not scores:
+            return []
+
+        labels: list[str] = []
+        try:
+            if isinstance(names, dict):
+                max_idx = max(names.keys()) if names else -1
+                labels = [names.get(i, str(i)) for i in range(max_idx + 1)]
+            else:
+                labels = list(names)
+        except Exception:
+            labels = []
+
+        pairs: list[tuple[str, float]] = []
+        for idx, score in enumerate(scores):
+            if idx < len(labels):
+                pairs.append((str(labels[idx]), float(score)))
+        pairs.sort(key=lambda item: item[1], reverse=True)
+        return pairs
 
     @property
     def model(self) -> YOLO:

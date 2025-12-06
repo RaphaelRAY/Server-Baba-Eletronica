@@ -15,7 +15,7 @@ class TestPresenceMonitor(unittest.TestCase):
         notifier = MagicMock()
         registry = MagicMock()
         registry.get_all.return_value = ['tok']
-        mock_time.time.side_effect = [0, 31, 31, 32]
+        mock_time.time.side_effect = [0, 31, 31, 32, 32, 33]
         db = Database(server=Database.SERVER_MEMORY)
 
         monitor = PresenceMonitor(notifier, registry, db, absence_timeout=30)
@@ -23,10 +23,10 @@ class TestPresenceMonitor(unittest.TestCase):
         self.assertTrue(any(e['type'] == 'absence' for e in db.get_recent_events()))
         monitor.check_camera('frame')
         monitor.handle_detections([])
-        notifier.notify.assert_called_once()
+        notifier.send_immediate.assert_called_once()
 
         monitor.check_camera(None)
-        self.assertEqual(notifier.notify.call_count, 2)
+        self.assertEqual(notifier.send_immediate.call_count, 2)
 
 
 if __name__ == '__main__':

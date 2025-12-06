@@ -105,4 +105,4 @@ class PresenceMonitor:
     def _notify_all(self, title: str, message: str, *, level: str = "info") -> None:
         """Send a notification to all registered tokens with level."""
         for t in self.registry.get_all():
-            self.notifier.notify(t, title=title, message=message, level=level)
+            self.notifier.send_immediate(t, title=title, message=message, level=level)

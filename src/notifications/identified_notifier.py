@@ -58,3 +58,11 @@ class IdentifiedNotifier:
         prefixed_title = f"[{lvl}] {title}" if lvl else title
         self._notifier.send(token, prefixed_title, message)
         self._last_sent = now
+
+    def send_immediate(
+        self, token: str, *, title: str, message: str, level: str = "Info"
+    ) -> None:
+        """Send a notification without applying cooldown (for debug/manual sends)."""
+        lvl = self._normalize_level(level)
+        prefixed_title = f"[{lvl}] {title}" if lvl else title
+        self._notifier.send(token, prefixed_title, message)

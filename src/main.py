@@ -12,7 +12,7 @@ from threading import Thread, Event
 from queue import Queue, Empty, Full
 
 from fastapi import FastAPI, HTTPException, Response, Query, Path
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # Ensure project root is discoverable when executing as a script.
@@ -123,9 +123,9 @@ try:
 except Exception:
     posture_imgsz = 224
 try:
-    posture_cooldown = float(os.getenv("POSTURE_ANALYSIS_COOLDOWN", "5"))
+    posture_cooldown = float(os.getenv("POSTURE_ANALYSIS_COOLDOWN", "1"))
 except Exception:
-    posture_cooldown = 5.0
+    posture_cooldown = 1.0
 posture_device = os.getenv("POSTURE_DEVICE")
 position_monitor = PositionMonitor(
     notifier,
@@ -447,22 +447,32 @@ def stream():
         raise HTTPException(503, "Sem frame disponível para streaming")
 
     # Define FPS de saída do stream
+    target_fps = None
     stream_fps_env = os.getenv("STREAM_FPS")
     if stream_fps_env not in (None, ""):
         try:
             target_fps = float(stream_fps_env)
         except Exception:
             target_fps = None
-    else:
-        # Se arquivo, tente sincronizar com FPS de origem; senão, padrão 15
-        target_fps = None
+    if target_fps is None:
+        # tenta usar FPS nativo do dispositivo/arquivo se conhecido
         try:
-            if getattr(camera, "source", None) == "file" and getattr(camera, "_source_fps", None):
-                target_fps = float(camera._source_fps)
+            source_fps = getattr(camera, "_source_fps", None)
+            if source_fps:
+                target_fps = float(source_fps)
         except Exception:
-            pass
-        if not target_fps:
-            target_fps = 15.0
+            target_fps = None
+    if target_fps is None:
+        # fallback para medir FPS atual em execução
+        try:
+            fps_stats = camera.get_fps_stats() or {}
+            for key in ("current", "mean"):
+                candidate = fps_stats.get(key)
+                if candidate:
+                    target_fps = float(candidate)
+                    break
+        except Exception:
+            target_fps = None
     frame_period = 1.0 / target_fps if target_fps and target_fps > 0 else None
 
     def mjpeg_generator():
@@ -523,6 +533,144 @@ async def events_sse():
         "X-Accel-Buffering": "no",
     }
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+
+# Helpers/endpoints para debug de notificacoes
+def _parse_tokens(raw) -> list[str]:
+    """Normalize token payload (string with commas/newlines or list) into a list."""
+    tokens: list[str] = []
+    if isinstance(raw, str):
+        normalized = raw.replace("\n", ",")
+        tokens = [t.strip() for t in normalized.split(",") if t.strip()]
+    elif isinstance(raw, (list, tuple, set)):
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                tokens.append(item.strip())
+    return tokens
+
+
+DEBUG_NOTIFY_HTML = """
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Debug - Push Notifications</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; background: #0f172a; color: #e2e8f0; }
+    .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 20px; max-width: 700px; }
+    label { display: block; margin-top: 12px; font-weight: 600; }
+    input, textarea, select { width: 100%; padding: 10px; margin-top: 6px; border-radius: 8px; border: 1px solid #1f2937; background: #0b1220; color: #e2e8f0; }
+    button { margin-top: 16px; padding: 12px 16px; border: none; border-radius: 10px; background: #2563eb; color: white; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .row { display: flex; gap: 12px; margin-top: 12px; }
+    .row > div { flex: 1; }
+    .status { margin-top: 12px; padding: 10px; border-radius: 8px; background: #0b1220; border: 1px solid #1f2937; }
+    .hint { color: #94a3b8; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Debug de Notificacoes</h2>
+    <div class="hint">Envie push para um token especifico ou para todos os registrados.</div>
+    <label for="token">Token (ou deixe vazio e marque "enviar para todos")</label>
+    <textarea id="token" rows="3" placeholder="token1, token2 ou um por linha"></textarea>
+
+    <div class="row">
+      <div>
+        <label for="title">Titulo</label>
+        <input id="title" value="[Debug] Ping" />
+      </div>
+      <div>
+        <label for="level">Nivel</label>
+        <select id="level">
+          <option>Info</option>
+          <option>Leve</option>
+          <option>Importante</option>
+          <option>Urgente</option>
+        </select>
+      </div>
+    </div>
+
+    <label for="message">Mensagem</label>
+    <textarea id="message" rows="3" placeholder="Conteudo da notificacao">Teste de debug</textarea>
+
+    <div style="margin-top:12px;">
+      <label><input type="checkbox" id="send_all" /> Enviar para todos os tokens registrados</label>
+    </div>
+
+    <button id="sendBtn">Enviar notificacao</button>
+    <div class="status" id="status">Aguardando envio...</div>
+  </div>
+
+  <script>
+    const btn = document.getElementById('sendBtn');
+    const statusBox = document.getElementById('status');
+    const fetchJson = async (url, payload) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      return data;
+    };
+    btn.onclick = async () => {
+      btn.disabled = true;
+      statusBox.textContent = 'Enviando...';
+      try {
+        const tokensRaw = document.getElementById('token').value;
+        const payload = {
+          token: tokensRaw,
+          title: document.getElementById('title').value || '[Debug] Ping',
+          message: document.getElementById('message').value || 'Teste de debug',
+          level: document.getElementById('level').value || 'Info',
+          send_all: document.getElementById('send_all').checked
+        };
+        const res = await fetchJson('/api/debug/notify', payload);
+        statusBox.textContent = `Enviado: ${res.sent} notificacoes`;
+      } catch (err) {
+        statusBox.textContent = 'Erro: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>
+"""
+
+
+@app.get("/debug/notify", response_class=HTMLResponse)
+def debug_notify_page():
+    """Serve uma tela simples para disparar notificacoes de debug via navegador."""
+    return DEBUG_NOTIFY_HTML
+
+
+@app.post("/api/debug/notify")
+def debug_notify(data: dict):
+    """Enviar notificacao manual para um token ou todos os registrados."""
+    title = str(data.get("title") or "[Debug] Ping")
+    message = str(data.get("message") or "Teste de debug")
+    level = str(data.get("level") or "Info")
+    send_all = bool(data.get("all") or data.get("send_all"))
+
+    tokens = _parse_tokens(data.get("tokens") or data.get("token"))
+    if send_all or not tokens:
+        tokens = token_registry.get_all()
+    seen = set()
+    tokens = [t for t in tokens if not (t in seen or seen.add(t))]
+
+    if not tokens:
+        raise HTTPException(400, "Nenhum token informado ou cadastrado")
+
+    sent = []
+    for t in tokens:
+        try:
+            notifier.send_immediate(t, title=title, message=message, level=level)
+            sent.append(t)
+        except Exception as exc:
+            logging.warning("Falha ao enviar notificacao de debug: %s", exc)
+    return {"sent": len(sent), "tokens": sent, "level": level, "title": title}
 
 
 @app.post("/api/register-token")

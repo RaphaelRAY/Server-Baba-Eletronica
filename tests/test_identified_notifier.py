@@ -41,6 +41,14 @@ class TestIdentifiedNotifier(unittest.TestCase):
         notifier.notify('tkn', title='A', message='B')
         self.assertEqual(mock_notifier.send.call_count, 2)
 
+    @patch('src.notifications.identified_notifier.Notifier')
+    def test_send_immediate_bypasses_cooldown(self, mock_notifier_cls):
+        mock_notifier = mock_notifier_cls.return_value
+        notifier = IdentifiedNotifier('key', cooldown=999)
+
+        notifier.send_immediate('abc', title='Ping', message='Hello', level='Urgente')
+        mock_notifier.send.assert_called_once_with('abc', '[Urgente] Ping', 'Hello')
+
 
 if __name__ == '__main__':
     unittest.main()

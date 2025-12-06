@@ -53,8 +53,8 @@ class TestPositionMonitor(unittest.TestCase):
         monitor.analyze_frame(frame)
         monitor.analyze_frame(frame)
 
-        notifier.notify.assert_called_once()
-        call_args = notifier.notify.call_args
+        notifier.send_immediate.assert_called_once()
+        call_args = notifier.send_immediate.call_args
         self.assertEqual(call_args.kwargs["title"], "Bebe de brucos")
         self.assertEqual(call_args.kwargs["level"], "Urgente")
         self.assertTrue(monitor.face_down_sent)
@@ -68,9 +68,9 @@ class TestPositionMonitor(unittest.TestCase):
 
         monitor.analyze_frame(self._blank_frame())
 
-        notifier.notify.assert_called_once()
+        notifier.send_immediate.assert_called_once()
         self.assertEqual(
-            notifier.notify.call_args.kwargs["title"], "Posicao suspeita"
+            notifier.send_immediate.call_args.kwargs["title"], "Posicao suspeita"
         )
         self.assertTrue(monitor.face_down_suspected_sent)
 
@@ -85,8 +85,8 @@ class TestPositionMonitor(unittest.TestCase):
         monitor.analyze_frame(frame)
         monitor.analyze_frame(frame)
 
-        notifier.notify.assert_called_once()
-        self.assertEqual(notifier.notify.call_args.kwargs["title"], "Bebe ausente")
+        notifier.send_immediate.assert_called_once()
+        self.assertEqual(notifier.send_immediate.call_args.kwargs["title"], "Bebe ausente")
         self.assertTrue(
             any(ev["type"] == "posture_absent" for ev in memory_events)
         )
@@ -103,7 +103,7 @@ class TestPositionMonitor(unittest.TestCase):
 
         self.assertFalse(monitor.face_down_sent)
         self.assertFalse(monitor.face_down_suspected_sent)
-        notifier.notify.assert_called_once()
+        notifier.send_immediate.assert_called_once()
 
     def test_low_confidence_does_not_trigger(self):
         monitor, notifier, _, model = self._build_monitor(
@@ -113,7 +113,7 @@ class TestPositionMonitor(unittest.TestCase):
 
         monitor.analyze_frame(self._blank_frame())
 
-        notifier.notify.assert_not_called()
+        notifier.send_immediate.assert_not_called()
         self.assertFalse(monitor.face_down_sent)
         self.assertEqual(memory_events, [])
 
@@ -127,8 +127,8 @@ class TestPositionMonitor(unittest.TestCase):
         model.return_value = [self._result(3)]
         monitor.analyze_frame(self._blank_frame())
 
-        notifier.notify.assert_called_once()
-        self.assertEqual(notifier.notify.call_args.kwargs["title"], "Rosto coberto")
+        notifier.send_immediate.assert_called_once()
+        self.assertEqual(notifier.send_immediate.call_args.kwargs["title"], "Rosto coberto")
         self.assertFalse(monitor.face_covered_sent)
         self.assertTrue(
             any(ev["type"] == "posture_face_covered" for ev in memory_events)
